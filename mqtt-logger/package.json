@@ -1,0 +1,9 @@
+{
+  "name": "mqtt-logger",
+  "version": "1.0.0",
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "express": "^4.21.0",
+    "mqtt": "^5.3.0"
+  }
+}

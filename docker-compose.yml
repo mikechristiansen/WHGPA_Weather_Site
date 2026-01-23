@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  # Mosquitto MQTT Broker
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: weather-mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "8883:8883"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+      - ./mosquitto/certs:/mosquitto/certs
+      - ./certbot/conf:/etc/letsencrypt:ro
+    networks:
+      - weather-network
+
+  # Nginx Web Server
+  nginx:
+    image: nginx:alpine
+    container_name: weather-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/html:/usr/share/nginx/html:ro
+      - ./data:/data:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    depends_on:
+      - mosquitto
+      - mqtt-logger
+    networks:
+      - weather-network
+
+  # Certbot for SSL certificates
+  certbot:
+    image: certbot/certbot
+    container_name: weather-certbot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - weather-network
+# MQTT Logger
+  mqtt-logger:
+    image: node:20-alpine
+    container_name: weather-logger
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "npm install && node logger.js"
+    volumes:
+      - ./mqtt-logger:/app
+      - ./data:/data
+    depends_on:
+      - mosquitto
+    networks:
+      - weather-network
+
+networks:
+  weather-network:
+    driver: bridge

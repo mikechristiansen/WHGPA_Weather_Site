@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Runtime data
+data/
+mosquitto/data/
+mosquitto/log/
+
+# SSL certificates (sensitive)
+certbot/conf/
+mosquitto/certs/
+
+# Mosquitto auth files (sensitive)
+mosquitto/config/acl
+mosquitto/config/passwd
+
+# Nginx auth files (sensitive)
+.htpasswd
+
+# Logs
+*.log
+
+# Claude Code settings
+.claude/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db

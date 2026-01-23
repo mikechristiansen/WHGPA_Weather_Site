@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weather Station Network</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <style>
+        .wind-marker {
+            background: transparent !important;
+            border: none !important;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div id="app"></div>
+
+    <script>
+        let stations = {};
+        let selectedStation = null;
+        let map = null;
+        let markers = {};
+        let lastDataHash = '';
+        let windCharts = [];
+        let lastWindyUploads = {}; // Track last Windy upload per station
+        const POLL_INTERVAL = 5000; // 5 seconds
+
+        // Load upload logs to get last Windy upload times
+        async function loadUploadLogs() {
+            try {
+                const response = await fetch('/data/upload-logs.json?t=' + Date.now());
+                if (response.ok) {
+                    const logs = await response.json();
+                    // Find the most recent successful Windy upload per station
+                    lastWindyUploads = {};
+                    for (const log of logs) {
+                        if (log.service === 'windy' && log.status === 'success') {
+                            const stationId = log.stationId;
+                            if (!lastWindyUploads[stationId] || log.timestamp > lastWindyUploads[stationId]) {
+                                lastWindyUploads[stationId] = log.timestamp;
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                // Upload logs may not exist yet, that's ok
+            }
+        }
+
+        // All wind values are stored in km/h (Meshtastic converted from m/s in logger)
+        function formatWindSpeed(kmh) {
+            return kmh.toFixed(1);
+        }
+
+        function getCardinalDirection(degrees) {
+            const directions = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+            const index = Math.round(degrees / 22.5) % 16;
+            return directions[index];
+        }
+
+        function getBatteryColor(percent) {
+            if (percent > 60) return 'text-green-500';
+            if (percent > 30) return 'text-yellow-500';
+            return 'text-red-500';
+        }
+
+        function formatVoltage(voltage) {
+            if (voltage === undefined || voltage === null) return '-';
+            return `${voltage.toFixed(2)}V`;
+        }
+
+        function getLastWindyUpload(stationId) {
+            // Extract numeric ID from station ID (e.g., "meshtastic-1608697650" -> "1608697650")
+            const numericId = stationId.replace(/^meshtastic-/, '');
+            const timestamp = lastWindyUploads[numericId];
+            if (!timestamp) return null;
+            return new Date(timestamp);
+        }
+
+        function formatLastWindy(stationId) {
+            const lastUpload = getLastWindyUpload(stationId);
+            if (!lastUpload) return '-';
+            return lastUpload.toLocaleTimeString();
+        }
+
+        async function loadData() {
+            try {
+                // Load upload logs in parallel with station data
+                loadUploadLogs();
+                const response = await fetch('/data/stations.json?t=' + Date.now());
+                if (response.ok) {
+                    const data = await response.json();
+                    const dataHash = JSON.stringify(data);
+
+                    // Only update if data has changed
+                    if (dataHash === lastDataHash) {
+                        return;
+                    }
+                    lastDataHash = dataHash;
+
+                    // Update stations
+                    for (const [stationId, stationData] of Object.entries(data)) {
+                        if (stationData.lastReading) {
+                            const reading = stationData.lastReading;
+                            stations[stationId] = {
+                                id: stationId,
+                                type: stationData.type,
+                                windDir: reading.windDir,
+                                windSpeed: reading.windSpeed,
+                                windGust: reading.windGust,
+                                windLull: reading.windLull,
+                                temp: reading.temp,
+                                humidity: reading.humidity,
+                                pressure: reading.pressure,
+                                rainfall1h: reading.rainfall1h,
+                                sensorVoltage: reading.sensorVoltage,
+                                stationVoltage: reading.stationVoltage,
+                                batteryPercent: reading.batteryPercent,
+                                rssi: reading.rssi,
+                                lat: reading.lat,
+                                lon: reading.lon,
+                                alt: reading.alt,
+                                lastUpdate: stationData.lastSeen,
+                                history: stationData.history || [],
+                                longname: stationData.longname,
+                                shortname: stationData.shortname
+                            };
+                        }
+                    }
+
+                    // Remove stations that no longer exist in data
+                    for (const stationId of Object.keys(stations)) {
+                        if (!data[stationId]) {
+                            delete stations[stationId];
+                        }
+                    }
+
+                    updateTable();
+                    updateMapMarkers();
+                    if (selectedStation) {
+                        updateDetailModal();
+                    }
+                }
+            } catch (e) {
+                console.error('Error loading data:', e);
+            }
+        }
+
+        function initApp() {
+            const app = document.getElementById('app');
+            app.innerHTML = `
+                <div class="min-h-screen">
+                    <div class="bg-white shadow-md">
+                        <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <svg class="text-blue-600 w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                                </svg>
+                                <h1 class="text-2xl font-bold text-gray-800">Weather Station Network</h1>
+                            </div>
+                            <div class="flex items-center gap-4">
+                                <a href="/admin.html" class="text-sm text-blue-600 hover:text-blue-800 hover:underline">Admin</a>
+                                <div class="flex items-center gap-2">
+                                    <div class="bg-green-500 animate-pulse w-3 h-3 rounded-full"></div>
+                                    <span class="text-sm text-gray-600">Live</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="max-w-7xl mx-auto p-4">
+                        <div class="bg-white rounded-lg shadow-lg p-4 mb-4">
+                            <h2 class="text-lg font-semibold text-gray-800 mb-4">Station Map</h2>
+                            <div id="map" style="height: 500px; border-radius: 8px;"></div>
+                            <div class="mt-2 text-xs text-gray-500 flex flex-wrap gap-3">
+                                <span class="font-medium">Wind Speed (km/h):</span>
+                                <span class="flex items-center gap-1"><div class="w-3 h-3 rounded" style="background: #1E88E5;"></div>0-15</span>
+                                <span class="flex items-center gap-1"><div class="w-3 h-3 rounded" style="background: #22c55e;"></div>15-30</span>
+                                <span class="flex items-center gap-1"><div class="w-3 h-3 rounded" style="background: #FB8500;"></div>30-45</span>
+                                <span class="flex items-center gap-1"><div class="w-3 h-3 rounded" style="background: #E63946;"></div>45-60</span>
+                                <span class="flex items-center gap-1"><div class="w-3 h-3 rounded" style="background: #9333ea;"></div>60+</span>
+                            </div>
+                        </div>
+                        <div class="bg-white rounded-lg shadow-lg p-4 mb-4">
+                            <h2 class="text-lg font-semibold text-gray-800">Active Stations: <span id="station-count">0</span></h2>
+                            <p id="no-stations-msg" class="text-gray-500 text-sm mt-2">Waiting for station data...</p>
+                        </div>
+                        <div id="table-container" class="bg-white rounded-lg shadow-lg p-4 overflow-x-auto hidden">
+                            <table class="min-w-full">
+                                <thead>
+                                    <tr class="text-left text-xs text-gray-500 uppercase border-b">
+                                        <th class="pb-3 font-medium">Station</th>
+                                        <th class="pb-3 font-medium">Type</th>
+                                        <th class="pb-3 font-medium">Wind Dir</th>
+                                        <th class="pb-3 font-medium">Speed</th>
+                                        <th class="pb-3 font-medium">Gust</th>
+                                        <th class="pb-3 font-medium">Lull</th>
+                                        <th class="pb-3 font-medium">Battery</th>
+                                        <th class="pb-3 font-medium">Station V</th>
+                                        <th class="pb-3 font-medium">Sensor V</th>
+                                        <th class="pb-3 font-medium">Last Update</th>
+                                        <th class="pb-3 font-medium">Last Windy Upload</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="station-table" class="divide-y divide-gray-200"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="max-w-7xl mx-auto px-4 mt-6">
+                        <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-center">
+                            <p class="text-sm text-yellow-800"><strong>Disclaimer:</strong> Wind data displayed on this site is provided as an indicator only and should not be relied upon for safety-critical decisions. Always verify conditions on-site and use proper judgment when engaging in weather-dependent activities.</p>
+                        </div>
+                    </div>
+                    <footer class="bg-gray-800 text-gray-400 text-center py-4 mt-8">
+                        <p class="text-sm">Mike Christiansen, 2026</p>
+                        <p class="text-xs mt-1">Built with Claude Code by Anthropic</p>
+                    </footer>
+                </div>
+                <div id="modal-container"></div>
+            `;
+
+            initMap();
+            loadData();
+            setInterval(loadData, POLL_INTERVAL);
+        }
+
+        function initMap() {
+            const mapElement = document.getElementById('map');
+            if (!mapElement || map) return;
+
+            try {
+                map = L.map('map').setView([-41.07, 175.53], 10);
+
+                // Define base map layers
+                const openTopoMap = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+                    maxZoom: 17,
+                    attribution: 'Map: &copy; <a href="https://opentopomap.org">OpenTopoMap</a>'
+                });
+
+                const cartoLight = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+                    maxZoom: 20,
+                    attribution: '&copy; <a href="https://carto.com/">CARTO</a>'
+                });
+
+                // Track current layer
+                let currentLayer = null;
+
+                // Function to switch layers based on zoom
+                function updateLayer() {
+                    const zoom = map.getZoom();
+                    const shouldUseTopoMap = zoom > 11;
+
+                    if (shouldUseTopoMap && currentLayer !== openTopoMap) {
+                        if (currentLayer) map.removeLayer(currentLayer);
+                        openTopoMap.addTo(map);
+                        currentLayer = openTopoMap;
+                    } else if (!shouldUseTopoMap && currentLayer !== cartoLight) {
+                        if (currentLayer) map.removeLayer(currentLayer);
+                        cartoLight.addTo(map);
+                        currentLayer = cartoLight;
+                    }
+                }
+
+                // Set initial layer
+                updateLayer();
+
+                // Listen for zoom changes
+                map.on('zoomend', updateLayer);
+
+                setTimeout(() => {
+                    if (map) map.invalidateSize();
+                }, 500);
+            } catch (e) {
+                console.error('Error initializing map:', e);
+            }
+        }
+
+        // Get wind-based color
+        function getWindColor(speed) {
+            if (speed === undefined) return '#6b7280'; // gray
+            if (speed < 15) return '#1E88E5';   // blue - light
+            if (speed < 30) return '#22c55e';   // green - moderate
+            if (speed < 45) return '#FB8500';   // orange - fresh
+            if (speed < 60) return '#E63946';   // red - strong
+            return '#9333ea';                   // purple - extreme (60+)
+        }
+
+        function updateMapMarkers() {
+            if (!map) return;
+
+            // Remove markers for stations that no longer exist
+            Object.keys(markers).forEach(stationId => {
+                if (!stations[stationId]) {
+                    map.removeLayer(markers[stationId]);
+                    delete markers[stationId];
+                }
+            });
+
+            // Update or add markers
+            Object.values(stations).forEach(station => {
+                if (!station.lat || !station.lon) return;
+
+                // Color by wind speed intensity
+                const color = getWindColor(station.windSpeed);
+                const dir = station.windDir;
+                const speed = station.windSpeed !== undefined ? Math.round(station.windSpeed) : '';
+
+                let iconHtml = '';
+                if (dir !== undefined && speed !== '') {
+                    // Pill-shaped badge with arrow and speed
+                    const pillWidth = speed >= 100 ? 52 : speed >= 10 ? 44 : 38;
+                    iconHtml = `<div style="
+                        display: inline-flex;
+                        align-items: center;
+                        background: ${color};
+                        border-radius: 4px;
+                        padding: 4px 8px;
+                        gap: 4px;
+                        white-space: nowrap;
+                    ">
+                        <svg width="8" height="10" viewBox="0 0 8 10" style="transform: rotate(${dir + 180}deg); flex-shrink: 0;">
+                            <polygon points="4,0 8,10 4,7 0,10" fill="white"/>
+                        </svg>
+                        <span style="color: white; font-weight: bold; font-size: 12px; font-family: Arial, sans-serif; line-height: 1;">${speed}</span>
+                    </div>`;
+                } else if (speed !== '') {
+                    // Has speed but no direction - pill with just number
+                    iconHtml = `<div style="
+                        display: inline-flex;
+                        align-items: center;
+                        background: ${color};
+                        border-radius: 4px;
+                        padding: 4px 8px;
+                    ">
+                        <span style="color: white; font-weight: bold; font-size: 12px; font-family: Arial, sans-serif; line-height: 1;">${speed}</span>
+                    </div>`;
+                } else {
+                    // No data - small gray dot
+                    const typeColor = station.type === 'FANET-RX' ? '#2563eb' :
+                                station.type === 'FANET-GS' || station.type === 'MQTT-FANET' ? '#16a34a' : '#9333ea';
+                    iconHtml = `<div style="width: 12px; height: 12px; background: ${typeColor}; border-radius: 50%; border: 2px solid white;"></div>`;
+                }
+
+                if (markers[station.id]) {
+                    // Update existing marker position and icon
+                    markers[station.id].setLatLng([station.lat, station.lon]);
+                    markers[station.id].setIcon(L.divIcon({
+                        html: iconHtml,
+                        className: 'wind-marker',
+                        iconSize: null,
+                        iconAnchor: null
+                    }));
+                    // Update popup content
+                    markers[station.id].getPopup().setContent(createPopupContent(station));
+                } else {
+                    // Create new marker
+                    const customIcon = L.divIcon({
+                        html: iconHtml,
+                        className: 'wind-marker',
+                        iconSize: null,
+                        iconAnchor: null
+                    });
+                    const marker = L.marker([station.lat, station.lon], { icon: customIcon }).addTo(map);
+                    marker.bindPopup(createPopupContent(station));
+                    markers[station.id] = marker;
+                }
+            });
+
+            // Fit bounds only once when we first get stations with GPS
+            if (!map._boundsSet) {
+                const stationsWithGPS = Object.values(stations).filter(s => s.lat && s.lon);
+                if (stationsWithGPS.length > 0) {
+                    const bounds = L.latLngBounds(stationsWithGPS.map(s => [s.lat, s.lon]));
+                    map.fitBounds(bounds, { padding: [50, 50], maxZoom: 13 });
+                    map._boundsSet = true;
+                }
+            }
+        }
+
+        function createPopupContent(station) {
+            const btnColor = station.type === 'FANET-RX' ? '#2563eb' :
+                            station.type === 'FANET-GS' || station.type === 'MQTT-FANET' ? '#16a34a' : '#9333ea';
+            return `<div style="min-width: 200px;">
+                <b>${station.shortname || station.longname || station.id}</b><br/>
+                <span style="font-size: 0.8em; color: #666;">${station.type}</span><br/>
+                ${station.windSpeed !== undefined ? `<b>Wind:</b> ${formatWindSpeed(station.windSpeed)} km/h ${station.windDir !== undefined ? getCardinalDirection(station.windDir) : ''}<br/>` : ''}
+                ${station.temp !== undefined ? `<b>Temp:</b> ${station.temp.toFixed(1)}°C<br/>` : ''}
+                <button onclick="window.selectStation('${station.id}')" style="margin-top: 8px; padding: 4px 8px; background: ${btnColor}; color: white; border: none; border-radius: 4px; cursor: pointer;">View Details</button>
+            </div>`;
+        }
+
+        function updateTable() {
+            const stationList = Object.values(stations);
+            const tableContainer = document.getElementById('table-container');
+            const tableBody = document.getElementById('station-table');
+            const countEl = document.getElementById('station-count');
+            const noStationsMsg = document.getElementById('no-stations-msg');
+
+            countEl.textContent = stationList.length;
+
+            if (stationList.length === 0) {
+                tableContainer.classList.add('hidden');
+                noStationsMsg.classList.remove('hidden');
+                return;
+            }
+
+            tableContainer.classList.remove('hidden');
+            noStationsMsg.classList.add('hidden');
+
+            tableBody.innerHTML = stationList.map(station => `
+                <tr class="hover:bg-gray-50 cursor-pointer text-sm" onclick="window.selectStation('${station.id}')">
+                    <td class="py-3">
+                        <div class="font-medium">${station.shortname || station.id}</div>
+                        ${station.longname ? `<div class="text-xs text-gray-500">${station.longname}</div>` : ''}
+                    </td>
+                    <td class="py-3">
+                        <span class="px-2 py-1 rounded text-xs ${station.type === 'FANET-RX' ? 'bg-blue-100 text-blue-700' : station.type === 'MQTT-FANET' || station.type === 'FANET-GS' ? 'bg-green-100 text-green-700' : 'bg-purple-100 text-purple-700'}">${station.type}</span>
+                    </td>
+                    <td class="py-3">${station.windDir !== undefined ? `${Math.round(station.windDir)}° ${getCardinalDirection(station.windDir)}` : '-'}</td>
+                    <td class="py-3">${station.windSpeed !== undefined ? `${formatWindSpeed(station.windSpeed)} km/h` : '-'}</td>
+                    <td class="py-3">${station.windGust !== undefined ? `${formatWindSpeed(station.windGust)} km/h` : '-'}</td>
+                    <td class="py-3">${station.windLull !== undefined ? `${formatWindSpeed(station.windLull)} km/h` : '-'}</td>
+                    <td class="py-3">${station.batteryPercent !== undefined ? `<span class="${getBatteryColor(station.batteryPercent)}">${Math.round(station.batteryPercent)}%</span>` : '-'}</td>
+                    <td class="py-3">${formatVoltage(station.stationVoltage)}</td>
+                    <td class="py-3">${formatVoltage(station.sensorVoltage)}</td>
+                    <td class="py-3 text-xs text-gray-500">${station.lastUpdate ? new Date(station.lastUpdate).toLocaleTimeString() : '-'}</td>
+                    <td class="py-3 text-xs text-gray-500">${formatLastWindy(station.id)}</td>
+                </tr>
+            `).join('');
+        }
+
+        function showDetailModal() {
+            updateDetailModal();
+        }
+
+        function destroyCharts() {
+            windCharts.forEach(chart => chart.destroy());
+            windCharts = [];
+        }
+
+        function createWindCharts(station) {
+            if (!station.history || station.history.length < 2) return;
+
+            const history = station.history;
+            const timestamps = history.map(r => new Date(r.timestamp));
+            const speeds = history.map(r => r.windSpeed);
+            const gusts = history.map(r => r.windGust);
+            const lulls = history.map(r => r.windLull);
+            const directions = history.map(r => r.windDir);
+
+            // Wind Speed Chart
+            const speedCtx = document.getElementById('windSpeedChart');
+            if (speedCtx) {
+                const datasets = [
+                    {
+                        label: 'Speed',
+                        data: timestamps.map((t, i) => ({ x: t, y: speeds[i] })),
+                        borderColor: 'rgb(59, 130, 246)',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0
+                    }
+                ];
+
+                if (gusts.some(g => g !== undefined)) {
+                    datasets.push({
+                        label: 'Gust',
+                        data: timestamps.map((t, i) => ({ x: t, y: gusts[i] })),
+                        borderColor: 'rgb(249, 115, 22)',
+                        backgroundColor: 'transparent',
+                        borderDash: [5, 5],
+                        tension: 0.3,
+                        pointRadius: 0
+                    });
+                }
+
+                if (lulls.some(l => l !== undefined)) {
+                    datasets.push({
+                        label: 'Lull',
+                        data: timestamps.map((t, i) => ({ x: t, y: lulls[i] })),
+                        borderColor: 'rgb(34, 197, 94)',
+                        backgroundColor: 'transparent',
+                        borderDash: [2, 2],
+                        tension: 0.3,
+                        pointRadius: 0
+                    });
+                }
+
+                const speedChart = new Chart(speedCtx, {
+                    type: 'line',
+                    data: { datasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { intersect: false, mode: 'index' },
+                        plugins: {
+                            legend: { position: 'top', labels: { boxWidth: 12, padding: 8 } },
+                            tooltip: {
+                                callbacks: {
+                                    label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(1) || '-'} km/h`
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: { unit: 'hour', displayFormats: { hour: 'HH:mm' } },
+                                title: { display: false }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                title: { display: true, text: 'km/h' }
+                            }
+                        }
+                    }
+                });
+                windCharts.push(speedChart);
+            }
+
+            // Wind Direction Chart
+            const dirCtx = document.getElementById('windDirChart');
+            if (dirCtx && directions.some(d => d !== undefined)) {
+                const dirChart = new Chart(dirCtx, {
+                    type: 'line',
+                    data: {
+                        datasets: [{
+                            label: 'Direction',
+                            data: timestamps.map((t, i) => ({ x: t, y: directions[i] })),
+                            borderColor: 'rgb(139, 92, 246)',
+                            backgroundColor: 'rgba(139, 92, 246, 0.1)',
+                            fill: true,
+                            tension: 0,
+                            pointRadius: 1,
+                            pointBackgroundColor: 'rgb(139, 92, 246)'
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { intersect: false, mode: 'index' },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: ctx => {
+                                        const deg = ctx.parsed.y;
+                                        return `Direction: ${deg?.toFixed(0) || '-'}° ${getCardinalDirection(deg)}`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: { unit: 'hour', displayFormats: { hour: 'HH:mm' } },
+                                title: { display: false }
+                            },
+                            y: {
+                                min: 0,
+                                max: 360,
+                                title: { display: true, text: 'Degrees' },
+                                ticks: {
+                                    stepSize: 90,
+                                    callback: val => {
+                                        const dirs = { 0: 'N', 90: 'E', 180: 'S', 270: 'W', 360: 'N' };
+                                        return dirs[val] || val;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+                windCharts.push(dirChart);
+            }
+        }
+
+        function updateDetailModal() {
+            const station = stations[selectedStation];
+            if (!station) {
+                closeDetailModal();
+                return;
+            }
+
+            let stats = null;
+            if (station.history && station.history.length > 0) {
+                const speeds = station.history.map(r => r.windSpeed).filter(s => s !== undefined);
+                const gusts = station.history.map(r => r.windGust).filter(g => g !== undefined);
+                const lulls = station.history.map(r => r.windLull).filter(l => l !== undefined);
+                if (speeds.length > 0) {
+                    stats = {
+                        avgSpeed: speeds.reduce((a, b) => a + b, 0) / speeds.length,
+                        maxSpeed: Math.max(...speeds),
+                        maxGust: gusts.length > 0 ? Math.max(...gusts) : null,
+                        minLull: lulls.length > 0 ? Math.min(...lulls) : null,
+                        readingCount: station.history.length
+                    };
+                }
+            }
+
+            const hasPowerInfo = station.sensorVoltage !== undefined || station.stationVoltage !== undefined || station.batteryPercent !== undefined;
+            const hasHistory = station.history && station.history.length >= 2;
+
+            destroyCharts();
+
+            document.getElementById('modal-container').innerHTML = `
+                <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-[1000]" onclick="window.closeDetailModal(event)">
+                    <div class="bg-white rounded-lg shadow-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <h2 class="text-xl font-bold text-gray-800">${station.shortname || station.id}</h2>
+                                <p class="text-sm text-gray-500">${station.type}</p>
+                                ${station.longname ? `<p class="text-sm text-gray-600 mt-1">${station.longname}</p>` : ''}
+                            </div>
+                            <button onclick="window.closeDetailModal()" class="text-gray-400 hover:text-gray-600">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                                </svg>
+                            </button>
+                        </div>
+
+                        ${station.windSpeed !== undefined ? `
+                        <div class="border-t pt-4 mb-4">
+                            <h3 class="text-sm font-semibold text-gray-700 mb-2">Wind - Current</h3>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div><div class="text-xs text-gray-500">Direction</div><div class="font-semibold">${Math.round(station.windDir)}° ${getCardinalDirection(station.windDir)}</div></div>
+                                <div><div class="text-xs text-gray-500">Speed</div><div class="font-semibold">${formatWindSpeed(station.windSpeed)} km/h</div></div>
+                                ${station.windGust !== undefined ? `<div><div class="text-xs text-gray-500">Gust</div><div class="font-semibold">${formatWindSpeed(station.windGust)} km/h</div></div>` : ''}
+                                ${station.windLull !== undefined ? `<div><div class="text-xs text-gray-500">Lull</div><div class="font-semibold">${formatWindSpeed(station.windLull)} km/h</div></div>` : ''}
+                            </div>
+                        </div>` : ''}
+
+                        ${stats ? `
+                        <div class="border-t pt-4 mb-4">
+                            <h3 class="text-sm font-semibold text-gray-700 mb-2">Wind - Statistics (${stats.readingCount} readings)</h3>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div><div class="text-xs text-gray-500">Average Speed</div><div class="font-semibold">${formatWindSpeed(stats.avgSpeed)} km/h</div></div>
+                                <div><div class="text-xs text-gray-500">Max Speed</div><div class="font-semibold">${formatWindSpeed(stats.maxSpeed)} km/h</div></div>
+                                ${stats.maxGust !== null ? `<div><div class="text-xs text-gray-500">Max Gust</div><div class="font-semibold text-orange-600">${formatWindSpeed(stats.maxGust)} km/h</div></div>` : ''}
+                                ${stats.minLull !== null ? `<div><div class="text-xs text-gray-500">Min Lull</div><div class="font-semibold text-blue-600">${formatWindSpeed(stats.minLull)} km/h</div></div>` : ''}
+                            </div>
+                        </div>` : ''}
+
+                        ${hasHistory ? `
+                        <div class="border-t pt-4 mb-4">
+                            <h3 class="text-sm font-semibold text-gray-700 mb-2">Wind Speed (24h)</h3>
+                            <div style="height: 200px;">
+                                <canvas id="windSpeedChart"></canvas>
+                            </div>
+                        </div>
+                        <div class="border-t pt-4 mb-4">
+                            <h3 class="text-sm font-semibold text-gray-700 mb-2">Wind Direction (24h)</h3>
+                            <div style="height: 150px;">
+                                <canvas id="windDirChart"></canvas>
+                            </div>
+                        </div>` : ''}
+
+                        ${hasPowerInfo ? `
+                        <div class="border-t pt-4 mb-4">
+                            <h3 class="text-sm font-semibold text-gray-700 mb-2">Power</h3>
+                            <div class="grid grid-cols-2 gap-3">
+                                ${station.stationVoltage !== undefined && station.stationVoltage !== null ? `<div><div class="text-xs text-gray-500">Station Voltage</div><div class="font-semibold">${station.stationVoltage.toFixed(2)}V</div></div>` : ''}
+                                ${station.sensorVoltage !== undefined && station.sensorVoltage !== null ? `<div><div class="text-xs text-gray-500">Sensor Voltage</div><div class="font-semibold">${station.sensorVoltage.toFixed(2)}V</div></div>` : ''}
+                                ${station.batteryPercent !== undefined ? `<div><div class="text-xs text-gray-500">Battery</div><div class="font-semibold ${getBatteryColor(station.batteryPercent)}">${Math.round(station.batteryPercent)}%</div></div>` : ''}
+                            </div>
+                        </div>` : ''}
+
+                        ${(station.temp !== undefined || station.humidity !== undefined || station.pressure !== undefined || station.rainfall1h !== undefined) ? `
+                        <div class="border-t pt-4 mb-4">
+                            <h3 class="text-sm font-semibold text-gray-700 mb-2">Environment</h3>
+                            <div class="grid grid-cols-2 gap-3 text-sm">
+                                ${station.temp !== undefined ? `<div><div class="text-xs text-gray-500">Temperature</div><div>${station.temp.toFixed(1)}°C</div></div>` : ''}
+                                ${station.humidity !== undefined ? `<div><div class="text-xs text-gray-500">Humidity</div><div>${Math.round(station.humidity)}%</div></div>` : ''}
+                                ${station.pressure !== undefined ? `<div><div class="text-xs text-gray-500">Pressure</div><div>${station.pressure.toFixed(1)} hPa</div></div>` : ''}
+                                ${station.rainfall1h !== undefined ? `<div><div class="text-xs text-gray-500">Rainfall (1h)</div><div>${station.rainfall1h.toFixed(1)} mm</div></div>` : ''}
+                            </div>
+                        </div>` : ''}
+
+                        ${(station.rssi !== undefined || station.snr !== undefined) ? `
+                        <div class="border-t pt-4 mb-4">
+                            <h3 class="text-sm font-semibold text-gray-700 mb-2">Signal</h3>
+                            <div class="grid grid-cols-2 gap-3 text-sm">
+                                ${station.rssi !== undefined ? `<div><div class="text-xs text-gray-500">RSSI</div><div>${station.rssi} dBm</div></div>` : ''}
+                                ${station.snr !== undefined ? `<div><div class="text-xs text-gray-500">SNR</div><div>${station.snr.toFixed(1)} dB</div></div>` : ''}
+                                ${station.hopsAway !== undefined ? `<div><div class="text-xs text-gray-500">Hops Away</div><div>${station.hopsAway}</div></div>` : ''}
+                            </div>
+                        </div>` : ''}
+
+                        <div class="border-t pt-4">
+                            <div class="text-xs text-gray-500">Last Update</div>
+                            <div class="text-sm">${station.lastUpdate ? new Date(station.lastUpdate).toLocaleString() : 'N/A'}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // Create charts after DOM is updated
+            if (hasHistory) {
+                setTimeout(() => createWindCharts(station), 50);
+            }
+        }
+
+        function closeDetailModal(event) {
+            if (!event || event.target === event.currentTarget) {
+                destroyCharts();
+                selectedStation = null;
+                document.getElementById('modal-container').innerHTML = '';
+            }
+        }
+
+        // Expose functions to global scope for onclick handlers
+        window.selectStation = function(stationId) {
+            selectedStation = stationId;
+            showDetailModal();
+        };
+        window.closeDetailModal = closeDetailModal;
+
+        // Initialize
+        initApp();
+    </script>
+</body>
+</html>

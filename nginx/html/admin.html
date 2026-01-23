@@ -1,0 +1,1281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weather Station Admin</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        h1 {
+            margin: 0 0 20px 0;
+            color: #4fc3f7;
+        }
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .tab {
+            padding: 10px 20px;
+            background: #2a2a4a;
+            border: none;
+            color: #aaa;
+            cursor: pointer;
+            border-radius: 5px 5px 0 0;
+            font-size: 14px;
+        }
+        .tab.active {
+            background: #3a3a5a;
+            color: #4fc3f7;
+        }
+        .tab:hover {
+            background: #3a3a5a;
+        }
+        .panel {
+            display: none;
+            background: #2a2a4a;
+            padding: 20px;
+            border-radius: 0 5px 5px 5px;
+        }
+        .panel.active {
+            display: block;
+        }
+        .station-list {
+            display: grid;
+            gap: 15px;
+        }
+        .station-card {
+            background: #3a3a5a;
+            padding: 15px;
+            border-radius: 5px;
+            display: grid;
+            gap: 10px;
+        }
+        .station-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .station-name {
+            font-size: 18px;
+            font-weight: bold;
+            color: #4fc3f7;
+        }
+        .station-id {
+            font-size: 12px;
+            color: #888;
+            font-family: monospace;
+        }
+        .station-actions {
+            display: flex;
+            gap: 10px;
+        }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .btn-primary {
+            background: #4fc3f7;
+            color: #1a1a2e;
+        }
+        .btn-danger {
+            background: #e74c3c;
+            color: white;
+        }
+        .btn-secondary {
+            background: #5a5a7a;
+            color: #eee;
+        }
+        .btn:hover {
+            opacity: 0.8;
+        }
+        .form-group {
+            display: grid;
+            gap: 5px;
+        }
+        .form-group label {
+            font-size: 12px;
+            color: #aaa;
+        }
+        .form-group input, .form-group select {
+            padding: 8px;
+            border: 1px solid #5a5a7a;
+            border-radius: 4px;
+            background: #2a2a4a;
+            color: #eee;
+            font-size: 14px;
+        }
+        .form-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        .section-title {
+            font-size: 14px;
+            color: #4fc3f7;
+            margin: 15px 0 10px 0;
+            border-bottom: 1px solid #5a5a7a;
+            padding-bottom: 5px;
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .checkbox-group input {
+            width: 18px;
+            height: 18px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: #3a3a5a;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #4fc3f7;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #aaa;
+            margin-top: 5px;
+        }
+        .stat-success { color: #2ecc71; }
+        .stat-error { color: #e74c3c; }
+        .stat-limited { color: #f39c12; }
+        .filters {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            align-items: flex-end;
+        }
+        .log-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .log-table th, .log-table td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #3a3a5a;
+        }
+        .log-table th {
+            background: #3a3a5a;
+            color: #4fc3f7;
+            font-weight: normal;
+            font-size: 12px;
+        }
+        .log-table tr:hover {
+            background: #3a3a5a;
+        }
+        .status-badge {
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        .status-success { background: #2ecc71; color: #1a1a2e; }
+        .status-error { background: #e74c3c; color: white; }
+        .status-rate_limited { background: #f39c12; color: #1a1a2e; }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .modal.active {
+            display: flex;
+        }
+        .modal-content {
+            background: #2a2a4a;
+            padding: 25px;
+            border-radius: 8px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .modal-header h2 {
+            margin: 0;
+            color: #4fc3f7;
+        }
+        .modal-close {
+            background: none;
+            border: none;
+            color: #aaa;
+            font-size: 24px;
+            cursor: pointer;
+        }
+        .modal-close:hover {
+            color: #eee;
+        }
+        .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        .alert {
+            padding: 10px 15px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+        }
+        .alert-success { background: #2ecc71; color: #1a1a2e; }
+        .alert-error { background: #e74c3c; color: white; }
+        .hidden { display: none !important; }
+        .service-badge {
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+        .service-wu { background: #3498db; color: white; }
+        .service-windy { background: #27ae60; color: white; }
+        .type-badge {
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 10px;
+            text-transform: uppercase;
+            font-weight: bold;
+            margin-left: 8px;
+        }
+        .type-meshtastic { background: #9b59b6; color: white; }
+        .type-fanet-rx { background: #3498db; color: white; }
+        .type-mqtt-fanet { background: #27ae60; color: white; }
+        .source-badge {
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 10px;
+            text-transform: uppercase;
+            font-weight: bold;
+        }
+        .source-mqtt { background: #9b59b6; color: white; }
+        .source-http { background: #e67e22; color: white; }
+        .station-logs {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #4a4a6a;
+        }
+        .last-log {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            margin-bottom: 5px;
+            flex-wrap: wrap;
+        }
+        .log-service {
+            color: #aaa;
+            min-width: 45px;
+        }
+        .log-time {
+            color: #888;
+        }
+        .log-details {
+            color: #e74c3c;
+            font-size: 11px;
+        }
+        .station-stale {
+            border: 2px solid #e74c3c;
+            background: rgba(231, 76, 60, 0.15);
+        }
+        .stale-badge {
+            background: #e74c3c;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 9px;
+            font-weight: bold;
+            margin-left: 8px;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        /* Health Dashboard */
+        .health-dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .health-card {
+            background: #3a3a5a;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .health-card.healthy { border-left: 4px solid #2ecc71; }
+        .health-card.stale { border-left: 4px solid #e74c3c; }
+        .health-card.errors { border-left: 4px solid #f39c12; }
+        .health-card.total { border-left: 4px solid #3498db; }
+        .health-value {
+            font-size: 32px;
+            font-weight: bold;
+            color: #4fc3f7;
+        }
+        .health-card.healthy .health-value { color: #2ecc71; }
+        .health-card.stale .health-value { color: #e74c3c; }
+        .health-card.errors .health-value { color: #f39c12; }
+        .health-label {
+            font-size: 12px;
+            color: #aaa;
+            margin-top: 5px;
+        }
+        /* Auto-refresh controls */
+        .refresh-controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 15px;
+            font-size: 13px;
+        }
+        .refresh-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .refresh-toggle input {
+            width: 18px;
+            height: 18px;
+        }
+        .last-updated {
+            color: #888;
+        }
+        .refresh-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: #2ecc71;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        .refresh-indicator.paused {
+            background: #888;
+        }
+        /* Sparkline charts */
+        .sparkline-container {
+            display: flex;
+            gap: 15px;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px dashed #4a4a6a;
+        }
+        .sparkline-item {
+            flex: 1;
+        }
+        .sparkline-label {
+            font-size: 10px;
+            color: #888;
+            margin-bottom: 3px;
+        }
+        .sparkline {
+            height: 25px;
+            display: flex;
+            align-items: flex-end;
+            gap: 1px;
+        }
+        .sparkline-bar {
+            flex: 1;
+            min-width: 3px;
+            max-width: 8px;
+            background: #2ecc71;
+            border-radius: 1px 1px 0 0;
+            transition: height 0.3s;
+        }
+        .sparkline-bar.error {
+            background: #e74c3c;
+        }
+        .sparkline-bar.partial {
+            background: #f39c12;
+        }
+        .sparkline-bar.empty {
+            background: #4a4a6a;
+            min-height: 2px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Weather Station Admin</h1>
+
+    <div class="tabs">
+        <button class="tab active" data-tab="stations">Stations</button>
+        <button class="tab" data-tab="logs">Upload Logs</button>
+    </div>
+
+    <div id="stations-panel" class="panel active">
+        <!-- Health Dashboard -->
+        <div id="health-dashboard" class="health-dashboard">
+            <div class="health-card total">
+                <div class="health-value" id="health-total">-</div>
+                <div class="health-label">Total Stations</div>
+            </div>
+            <div class="health-card healthy">
+                <div class="health-value" id="health-healthy">-</div>
+                <div class="health-label">Healthy</div>
+            </div>
+            <div class="health-card stale">
+                <div class="health-value" id="health-stale">-</div>
+                <div class="health-label">Stale (30m+)</div>
+            </div>
+            <div class="health-card errors">
+                <div class="health-value" id="health-errors">-</div>
+                <div class="health-label">Errors (1h)</div>
+            </div>
+        </div>
+
+        <!-- Refresh Controls -->
+        <div class="refresh-controls">
+            <div class="refresh-toggle">
+                <span class="refresh-indicator" id="refresh-indicator"></span>
+                <input type="checkbox" id="auto-refresh" checked onchange="toggleAutoRefresh()">
+                <label for="auto-refresh">Auto-refresh</label>
+            </div>
+            <span class="last-updated">Last updated: <span id="last-updated">-</span></span>
+            <button class="btn btn-secondary" onclick="loadStations()" style="padding: 5px 10px; font-size: 12px;">Refresh Now</button>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h2 style="margin: 0; color: #aaa; font-size: 16px;">Configured Stations</h2>
+            <button class="btn btn-primary" onclick="showAddStation()">Add Station</button>
+        </div>
+        <div id="alert-container"></div>
+        <div id="station-list" class="station-list">
+            Loading...
+        </div>
+    </div>
+
+    <div id="logs-panel" class="panel">
+        <div class="stats-grid" id="stats-grid">
+            Loading stats...
+        </div>
+
+        <div class="filters">
+            <div class="form-group">
+                <label>Service</label>
+                <select id="filter-service">
+                    <option value="">All Services</option>
+                    <option value="wu">Weather Underground</option>
+                    <option value="windy">Windy</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Status</label>
+                <select id="filter-status">
+                    <option value="">All Status</option>
+                    <option value="success">Success</option>
+                    <option value="error">Error</option>
+                    <option value="rate_limited">Rate Limited</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Limit</label>
+                <select id="filter-limit">
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                </select>
+            </div>
+            <button class="btn btn-primary" onclick="loadLogs()">Refresh</button>
+        </div>
+
+        <table class="log-table">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Service</th>
+                    <th>Source</th>
+                    <th>Station</th>
+                    <th>Status</th>
+                    <th>Details</th>
+                </tr>
+            </thead>
+            <tbody id="logs-body">
+                <tr><td colspan="6">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Edit Station Modal -->
+    <div id="station-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal-title">Edit Station</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <form id="station-form" onsubmit="saveStation(event)">
+                <input type="hidden" id="station-id">
+                <input type="hidden" id="is-new-station">
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Station Type</label>
+                        <select id="station-type" onchange="onStationTypeChange()">
+                            <option value="Meshtastic">Meshtastic</option>
+                            <option value="FANET-RX">FANET-RX</option>
+                            <option value="MQTT-FANET">MQTT-FANET</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Station</label>
+                        <select id="station-id-select" onchange="onStationSelect()">
+                            <option value="">Loading stations...</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Station Name</label>
+                        <input type="text" id="station-name" required placeholder="e.g. KRAU">
+                    </div>
+                </div>
+
+                <div class="section-title">Weather Underground</div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Station ID</label>
+                        <input type="text" id="wu-id" placeholder="e.g. IMASTE70">
+                    </div>
+                    <div class="form-group">
+                        <label>Password</label>
+                        <input type="text" id="wu-password">
+                    </div>
+                </div>
+
+                <div class="section-title">Windy</div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>API Key</label>
+                        <input type="text" id="windy-apikey">
+                    </div>
+                    <div class="form-group">
+                        <label>Station Number</label>
+                        <input type="text" id="windy-station" placeholder="e.g. 0">
+                    </div>
+                </div>
+
+                <div class="section-title">Options</div>
+                <div class="form-row">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="opt-temp-wind">
+                        <label for="opt-temp-wind">Temperature only when wind present</label>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="opt-humidity-wind">
+                        <label for="opt-humidity-wind">Humidity only when wind present</label>
+                    </div>
+                </div>
+                <div class="form-row" style="margin-top: 10px;">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="opt-rain">
+                        <label for="opt-rain">Enable rain reporting</label>
+                    </div>
+                </div>
+                <div class="form-row" style="margin-top: 10px;">
+                    <div class="form-group">
+                        <label>Max Rain 1h (mm)</label>
+                        <input type="number" id="opt-maxrain1h" value="100">
+                    </div>
+                    <div class="form-group">
+                        <label>Max Rain 24h (mm)</label>
+                        <input type="number" id="opt-maxrain1d" value="500">
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // Auto-refresh state
+        let autoRefreshEnabled = true;
+        let autoRefreshInterval = null;
+        let lastUpdateTime = null;
+        let lastUpdateInterval = null;
+        const AUTO_REFRESH_MS = 30000; // 30 seconds
+
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById(tab.dataset.tab + '-panel').classList.add('active');
+
+                if (tab.dataset.tab === 'logs') {
+                    loadStats();
+                    loadLogs();
+                }
+            });
+        });
+
+        // Auto-refresh toggle
+        function toggleAutoRefresh() {
+            autoRefreshEnabled = document.getElementById('auto-refresh').checked;
+            const indicator = document.getElementById('refresh-indicator');
+            if (autoRefreshEnabled) {
+                indicator.classList.remove('paused');
+                startAutoRefresh();
+            } else {
+                indicator.classList.add('paused');
+                stopAutoRefresh();
+            }
+        }
+
+        function startAutoRefresh() {
+            if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+            autoRefreshInterval = setInterval(() => {
+                if (autoRefreshEnabled) loadStations();
+            }, AUTO_REFRESH_MS);
+        }
+
+        function stopAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+        }
+
+        function updateLastUpdatedDisplay() {
+            if (!lastUpdateTime) return;
+            const seconds = Math.floor((Date.now() - lastUpdateTime) / 1000);
+            document.getElementById('last-updated').textContent = `${seconds}s ago`;
+        }
+
+        // Start the "last updated" counter
+        function startLastUpdatedCounter() {
+            if (lastUpdateInterval) clearInterval(lastUpdateInterval);
+            lastUpdateInterval = setInterval(updateLastUpdatedDisplay, 1000);
+        }
+
+        // Load stations with their last log entries and history
+        async function loadStations() {
+            try {
+                const [configRes, logsRes] = await Promise.all([
+                    fetch('/api/config'),
+                    fetch('/api/logs?limit=1000')  // Get more logs for sparklines
+                ]);
+                const config = await configRes.json();
+                const logs = await logsRes.json();
+
+                // Update last refresh time
+                lastUpdateTime = Date.now();
+                updateLastUpdatedDisplay();
+
+                // Build map of last log per station per service
+                const lastLogs = {};
+                for (const log of logs) {
+                    const key = `${log.stationId}-${log.service}`;
+                    if (!lastLogs[key]) {
+                        lastLogs[key] = log;
+                    }
+                }
+
+                // Build history for sparklines (last 24 hours, hourly buckets)
+                const history = buildSparklineHistory(logs);
+
+                // Update health dashboard
+                updateHealthDashboard(config.stations, lastLogs, logs);
+
+                renderStations(config.stations, lastLogs, history);
+            } catch (err) {
+                document.getElementById('station-list').innerHTML = 'Error loading stations: ' + err.message;
+            }
+        }
+
+        // Build sparkline history data (24 hourly buckets)
+        function buildSparklineHistory(logs) {
+            const now = Date.now();
+            const hourMs = 60 * 60 * 1000;
+            const history = {};  // stationId-service -> array of 24 hourly buckets
+
+            // Initialize buckets for each station-service
+            for (const log of logs) {
+                const key = `${log.stationId}-${log.service}`;
+                if (!history[key]) {
+                    history[key] = Array(24).fill(null).map(() => ({ success: 0, error: 0, total: 0 }));
+                }
+            }
+
+            // Fill buckets
+            for (const log of logs) {
+                const key = `${log.stationId}-${log.service}`;
+                const hoursAgo = Math.floor((now - log.timestamp) / hourMs);
+                if (hoursAgo >= 0 && hoursAgo < 24 && history[key]) {
+                    const bucket = history[key][23 - hoursAgo];  // Index 23 is most recent hour
+                    bucket.total++;
+                    if (log.status === 'success') bucket.success++;
+                    else if (log.status === 'error') bucket.error++;
+                }
+            }
+
+            return history;
+        }
+
+        // Update health dashboard
+        function updateHealthDashboard(stations, lastLogs, logs) {
+            const now = Date.now();
+            const oneHourAgo = now - 60 * 60 * 1000;
+            let total = 0, healthy = 0, stale = 0, errors = 0;
+
+            for (const [id, station] of Object.entries(stations)) {
+                const isConfigured = station.wunderground || station.windy;
+                if (!isConfigured) continue;
+
+                total++;
+
+                const wuLog = lastLogs[`${id}-wu`];
+                const windyLog = lastLogs[`${id}-windy`];
+                const wuSuccessTime = (wuLog && wuLog.status === 'success') ? wuLog.timestamp : 0;
+                const windySuccessTime = (windyLog && windyLog.status === 'success') ? windyLog.timestamp : 0;
+                const lastSuccessTime = Math.max(wuSuccessTime, windySuccessTime);
+
+                if (now - lastSuccessTime <= STALE_THRESHOLD_MS) {
+                    healthy++;
+                } else {
+                    stale++;
+                }
+            }
+
+            // Count errors in last hour
+            for (const log of logs) {
+                if (log.timestamp >= oneHourAgo && log.status === 'error') {
+                    errors++;
+                }
+            }
+
+            document.getElementById('health-total').textContent = total;
+            document.getElementById('health-healthy').textContent = healthy;
+            document.getElementById('health-stale').textContent = stale;
+            document.getElementById('health-errors').textContent = errors;
+        }
+
+        // Generate sparkline HTML
+        function generateSparkline(historyKey, history) {
+            const data = history[historyKey];
+            if (!data) {
+                return '<div class="sparkline">' + Array(24).fill('<div class="sparkline-bar empty" style="height: 2px;"></div>').join('') + '</div>';
+            }
+
+            const maxTotal = Math.max(...data.map(b => b.total), 1);
+
+            return '<div class="sparkline">' + data.map(bucket => {
+                if (bucket.total === 0) {
+                    return '<div class="sparkline-bar empty" style="height: 2px;" title="No data"></div>';
+                }
+                const height = Math.max(4, Math.round((bucket.total / maxTotal) * 25));
+                const successRate = bucket.success / bucket.total;
+                let barClass = 'sparkline-bar';
+                if (bucket.error > 0 && bucket.success === 0) barClass += ' error';
+                else if (bucket.error > 0) barClass += ' partial';
+                const title = `${bucket.success}/${bucket.total} successful`;
+                return `<div class="${barClass}" style="height: ${height}px;" title="${title}"></div>`;
+            }).join('') + '</div>';
+        }
+
+        // Determine station type from ID
+        function getStationType(id) {
+            if (id.startsWith('fanet-rx-')) return 'FANET-RX';
+            if (id.startsWith('fanet-direct-')) return 'MQTT-FANET';
+            return 'Meshtastic';
+        }
+
+        // Get CSS class for station type badge
+        function getTypeBadgeClass(type) {
+            switch (type) {
+                case 'FANET-RX': return 'type-fanet-rx';
+                case 'MQTT-FANET': return 'type-mqtt-fanet';
+                default: return 'type-meshtastic';
+            }
+        }
+
+        const STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+
+        function renderStations(stations, lastLogs = {}, history = {}) {
+            const container = document.getElementById('station-list');
+            if (Object.keys(stations).length === 0) {
+                container.innerHTML = '<p style="color: #888;">No stations configured.</p>';
+                return;
+            }
+
+            const now = Date.now();
+
+            // Convert to array and add computed fields
+            const stationArray = Object.entries(stations).map(([id, station]) => {
+                const wuLog = lastLogs[`${id}-wu`];
+                const windyLog = lastLogs[`${id}-windy`];
+
+                // Get the most recent successful post timestamp
+                const wuSuccessTime = (wuLog && wuLog.status === 'success') ? wuLog.timestamp : 0;
+                const windySuccessTime = (windyLog && windyLog.status === 'success') ? windyLog.timestamp : 0;
+                const lastSuccessTime = Math.max(wuSuccessTime, windySuccessTime);
+
+                // Check if station is stale (configured but no success in 30 min)
+                const isConfigured = station.wunderground || station.windy;
+                const isStale = isConfigured && (now - lastSuccessTime > STALE_THRESHOLD_MS);
+
+                return { id, station, wuLog, windyLog, lastSuccessTime, isStale };
+            });
+
+            // Sort by last success time (most recent first), stale stations at top
+            stationArray.sort((a, b) => {
+                // Stale stations first
+                if (a.isStale && !b.isStale) return -1;
+                if (!a.isStale && b.isStale) return 1;
+                // Then by last success time (most recent first)
+                return b.lastSuccessTime - a.lastSuccessTime;
+            });
+
+            container.innerHTML = stationArray.map(({ id, station, wuLog, windyLog, isStale }) => {
+                const stationType = getStationType(id);
+                const badgeClass = getTypeBadgeClass(stationType);
+                const wuSparkline = station.wunderground ? generateSparkline(`${id}-wu`, history) : '';
+                const windySparkline = station.windy ? generateSparkline(`${id}-windy`, history) : '';
+                const staleClass = isStale ? 'station-stale' : '';
+
+                return `
+                <div class="station-card ${staleClass}">
+                    <div class="station-header">
+                        <div>
+                            <div class="station-name">
+                                ${escapeHtml(station.name)}
+                                <span class="type-badge ${badgeClass}">${stationType}</span>
+                                ${isStale ? '<span class="stale-badge">STALE</span>' : ''}
+                            </div>
+                            <div class="station-id">ID: ${escapeHtml(id)}</div>
+                        </div>
+                        <div class="station-actions">
+                            <button class="btn btn-secondary" onclick="editStation('${escapeHtml(id)}')">Edit</button>
+                            <button class="btn btn-danger" onclick="deleteStation('${escapeHtml(id)}', '${escapeHtml(station.name)}')">Delete</button>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div>
+                            <strong style="color: #aaa; font-size: 12px;">Weather Underground:</strong>
+                            ${station.wunderground ? `<span style="color: #3498db;">${escapeHtml(station.wunderground.id)}</span>` : '<span style="color: #666;">Not configured</span>'}
+                        </div>
+                        <div>
+                            <strong style="color: #aaa; font-size: 12px;">Windy:</strong>
+                            ${station.windy ? `<span style="color: #27ae60;">Station ${escapeHtml(station.windy.station)}</span>` : '<span style="color: #666;">Not configured</span>'}
+                        </div>
+                    </div>
+                    <div class="station-logs">
+                        ${station.wunderground ? renderLastLog('WU', wuLog) : ''}
+                        ${station.windy ? renderLastLog('Windy', windyLog) : ''}
+                    </div>
+                    ${(station.wunderground || station.windy) ? `
+                    <div class="sparkline-container">
+                        ${station.wunderground ? `<div class="sparkline-item"><div class="sparkline-label">WU (24h)</div>${wuSparkline}</div>` : ''}
+                        ${station.windy ? `<div class="sparkline-item"><div class="sparkline-label">Windy (24h)</div>${windySparkline}</div>` : ''}
+                    </div>` : ''}
+                    <div style="font-size: 12px; color: #888; margin-top: 10px;">
+                        Options: ${station.options.tempOnlyIfWind ? 'Temp w/wind' : ''}
+                        ${station.options.humidityOnlyIfWind ? 'Humidity w/wind' : ''}
+                        ${station.options.rain ? 'Rain enabled' : 'Rain disabled'}
+                    </div>
+                </div>
+            `}).join('');
+        }
+
+        function renderLastLog(service, log) {
+            if (!log) {
+                return `<div class="last-log"><span class="log-service">${service}:</span> <span style="color: #666;">No uploads yet</span></div>`;
+            }
+            const time = formatTimeAgo(log.timestamp);
+            const statusClass = `status-${log.status}`;
+            const sourceClass = `source-${(log.source || 'MQTT').toLowerCase()}`;
+            let details = '';
+            if (log.status === 'error') {
+                details = log.error ? ` - ${escapeHtml(log.error.substring(0, 40))}` : '';
+            } else if (log.status === 'rate_limited') {
+                details = ` (${log.waitSeconds}s)`;
+            }
+            return `<div class="last-log">
+                <span class="log-service">${service}:</span>
+                <span class="status-badge ${statusClass}">${log.status}</span>
+                <span class="source-badge ${sourceClass}">${log.source || 'MQTT'}</span>
+                <span class="log-time">${time}</span>
+                <span class="log-details">${details}</span>
+            </div>`;
+        }
+
+        function formatTimeAgo(timestamp) {
+            const seconds = Math.floor((Date.now() - timestamp) / 1000);
+            if (seconds < 60) return `${seconds}s ago`;
+            const minutes = Math.floor(seconds / 60);
+            if (minutes < 60) return `${minutes}m ago`;
+            const hours = Math.floor(minutes / 60);
+            if (hours < 24) return `${hours}h ago`;
+            const days = Math.floor(hours / 24);
+            return `${days}d ago`;
+        }
+
+        // Cache for available stations by type
+        let availableStations = {};
+
+        // Fetch stations of a specific type
+        async function fetchStationsByType(type) {
+            try {
+                const res = await fetch(`/api/stations?type=${encodeURIComponent(type)}`);
+                return await res.json();
+            } catch (err) {
+                console.error('Error fetching stations:', err);
+                return [];
+            }
+        }
+
+        // Populate station dropdown based on type
+        async function populateStationDropdown(type) {
+            const select = document.getElementById('station-id-select');
+            select.innerHTML = '<option value="">Loading...</option>';
+
+            const stations = await fetchStationsByType(type);
+            availableStations[type] = stations;
+
+            if (stations.length === 0) {
+                select.innerHTML = '<option value="">No stations found</option>';
+                return;
+            }
+
+            // Filter out already configured stations for new station mode
+            const isNew = document.getElementById('is-new-station').value === 'true';
+            const filteredStations = isNew
+                ? stations.filter(s => !s.configured)
+                : stations;
+
+            if (filteredStations.length === 0) {
+                select.innerHTML = '<option value="">All stations already configured</option>';
+                return;
+            }
+
+            select.innerHTML = '<option value="">Select a station...</option>' +
+                filteredStations.map(s => `<option value="${escapeHtml(s.id)}" data-name="${escapeHtml(s.name)}">${escapeHtml(s.name)} (${escapeHtml(s.id)})</option>`).join('');
+        }
+
+        // Handle station type change
+        async function onStationTypeChange() {
+            const type = document.getElementById('station-type').value;
+            await populateStationDropdown(type);
+            document.getElementById('station-name').value = '';
+        }
+
+        // Handle station selection
+        function onStationSelect() {
+            const select = document.getElementById('station-id-select');
+            const selectedOption = select.options[select.selectedIndex];
+            if (selectedOption && selectedOption.dataset.name) {
+                document.getElementById('station-name').value = selectedOption.dataset.name;
+            }
+        }
+
+        // Show add station modal
+        async function showAddStation() {
+            document.getElementById('modal-title').textContent = 'Add Station';
+            document.getElementById('station-form').reset();
+            document.getElementById('station-id').value = '';
+            document.getElementById('is-new-station').value = 'true';
+            document.getElementById('station-type').value = 'Meshtastic';
+            document.getElementById('station-type').disabled = false;
+            document.getElementById('station-id-select').disabled = false;
+            document.getElementById('opt-temp-wind').checked = true;
+            document.getElementById('opt-rain').checked = true;
+            document.getElementById('opt-maxrain1h').value = 100;
+            document.getElementById('opt-maxrain1d').value = 500;
+            document.getElementById('station-modal').classList.add('active');
+            await populateStationDropdown('Meshtastic');
+        }
+
+        // Edit station
+        async function editStation(id) {
+            try {
+                const res = await fetch('/api/config');
+                const config = await res.json();
+                const station = config.stations[id];
+                if (!station) {
+                    showAlert('Station not found', 'error');
+                    return;
+                }
+
+                const stationType = getStationType(id);
+
+                document.getElementById('modal-title').textContent = 'Edit Station';
+                document.getElementById('station-id').value = id;
+                document.getElementById('is-new-station').value = 'false';
+                document.getElementById('station-type').value = stationType;
+                document.getElementById('station-type').disabled = true;
+                document.getElementById('station-name').value = station.name || '';
+
+                // Populate dropdown and select the current station
+                await populateStationDropdown(stationType);
+                document.getElementById('station-id-select').value = id;
+                document.getElementById('station-id-select').disabled = true;
+
+                document.getElementById('wu-id').value = station.wunderground?.id || '';
+                document.getElementById('wu-password').value = station.wunderground?.password || '';
+
+                document.getElementById('windy-apikey').value = station.windy?.apiKey || '';
+                document.getElementById('windy-station').value = station.windy?.station || '';
+
+                document.getElementById('opt-temp-wind').checked = station.options?.tempOnlyIfWind ?? true;
+                document.getElementById('opt-humidity-wind').checked = station.options?.humidityOnlyIfWind ?? false;
+                document.getElementById('opt-rain').checked = station.options?.rain ?? true;
+                document.getElementById('opt-maxrain1h').value = station.options?.maxRain1h ?? 100;
+                document.getElementById('opt-maxrain1d').value = station.options?.maxRain1d ?? 500;
+
+                document.getElementById('station-modal').classList.add('active');
+            } catch (err) {
+                showAlert('Error loading station: ' + err.message, 'error');
+            }
+        }
+
+        // Save station
+        async function saveStation(event) {
+            event.preventDefault();
+
+            const isNew = document.getElementById('is-new-station').value === 'true';
+            const id = isNew ? document.getElementById('station-id-select').value : document.getElementById('station-id').value;
+
+            if (!id) {
+                showAlert('Please select a station', 'error');
+                return;
+            }
+
+            const data = {
+                name: document.getElementById('station-name').value,
+                options: {
+                    tempOnlyIfWind: document.getElementById('opt-temp-wind').checked,
+                    humidityOnlyIfWind: document.getElementById('opt-humidity-wind').checked,
+                    rain: document.getElementById('opt-rain').checked,
+                    maxRain1h: parseInt(document.getElementById('opt-maxrain1h').value) || 100,
+                    maxRain1d: parseInt(document.getElementById('opt-maxrain1d').value) || 500
+                }
+            };
+
+            const wuId = document.getElementById('wu-id').value;
+            const wuPassword = document.getElementById('wu-password').value;
+            if (wuId && wuPassword) {
+                data.wunderground = { id: wuId, password: wuPassword };
+            }
+
+            const windyApiKey = document.getElementById('windy-apikey').value;
+            const windyStation = document.getElementById('windy-station').value;
+            if (windyApiKey && windyStation) {
+                data.windy = { apiKey: windyApiKey, station: windyStation };
+            }
+
+            try {
+                let res;
+                if (isNew) {
+                    data.id = id;
+                    res = await fetch('/api/config/stations', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                } else {
+                    res = await fetch(`/api/config/stations/${id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                }
+
+                const result = await res.json();
+                if (res.ok) {
+                    showAlert(isNew ? 'Station added successfully' : 'Station updated successfully', 'success');
+                    closeModal();
+                    loadStations();
+                } else {
+                    showAlert(result.error || 'Error saving station', 'error');
+                }
+            } catch (err) {
+                showAlert('Error saving station: ' + err.message, 'error');
+            }
+        }
+
+        // Delete station
+        async function deleteStation(id, name) {
+            if (!confirm(`Are you sure you want to delete station "${name}" (${id})?`)) {
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/config/stations/${id}`, { method: 'DELETE' });
+                if (res.ok) {
+                    showAlert('Station deleted successfully', 'success');
+                    loadStations();
+                } else {
+                    const result = await res.json();
+                    showAlert(result.error || 'Error deleting station', 'error');
+                }
+            } catch (err) {
+                showAlert('Error deleting station: ' + err.message, 'error');
+            }
+        }
+
+        // Close modal
+        function closeModal() {
+            document.getElementById('station-modal').classList.remove('active');
+        }
+
+        // Show alert
+        function showAlert(message, type) {
+            const container = document.getElementById('alert-container');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            container.innerHTML = '';
+            container.appendChild(alert);
+            setTimeout(() => alert.remove(), 5000);
+        }
+
+        // Load stats
+        async function loadStats() {
+            try {
+                const res = await fetch('/api/logs/stats');
+                const stats = await res.json();
+                renderStats(stats);
+            } catch (err) {
+                document.getElementById('stats-grid').innerHTML = 'Error loading stats';
+            }
+        }
+
+        function renderStats(stats) {
+            document.getElementById('stats-grid').innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value stat-success">${stats.lastHour.wu.success}</div>
+                    <div class="stat-label">WU Success (1h)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value stat-error">${stats.lastHour.wu.error}</div>
+                    <div class="stat-label">WU Errors (1h)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value stat-success">${stats.lastHour.windy.success}</div>
+                    <div class="stat-label">Windy Success (1h)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value stat-error">${stats.lastHour.windy.error}</div>
+                    <div class="stat-label">Windy Errors (1h)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value stat-limited">${stats.lastHour.windy.rate_limited || 0}</div>
+                    <div class="stat-label">Rate Limited (1h)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${stats.total}</div>
+                    <div class="stat-label">Total Logs</div>
+                </div>
+            `;
+        }
+
+        // Load logs
+        async function loadLogs() {
+            const service = document.getElementById('filter-service').value;
+            const status = document.getElementById('filter-status').value;
+            const limit = document.getElementById('filter-limit').value;
+
+            const params = new URLSearchParams();
+            if (service) params.append('service', service);
+            if (status) params.append('status', status);
+            params.append('limit', limit);
+
+            try {
+                const res = await fetch('/api/logs?' + params.toString());
+                const logs = await res.json();
+                renderLogs(logs);
+            } catch (err) {
+                document.getElementById('logs-body').innerHTML = `<tr><td colspan="6">Error: ${err.message}</td></tr>`;
+            }
+        }
+
+        function renderLogs(logs) {
+            const tbody = document.getElementById('logs-body');
+            if (logs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="color: #888;">No logs found</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = logs.map(log => `
+                <tr>
+                    <td>${formatTime(log.timestamp)}</td>
+                    <td><span class="service-badge service-${log.service}">${log.service}</span></td>
+                    <td><span class="source-badge source-${(log.source || 'MQTT').toLowerCase()}">${log.source || 'MQTT'}</span></td>
+                    <td>${escapeHtml(log.stationName || log.stationId)}</td>
+                    <td><span class="status-badge status-${log.status}">${log.status}</span></td>
+                    <td style="font-size: 12px; color: #888; max-width: 400px; word-break: break-all;">
+                        ${log.httpStatus ? `HTTP ${log.httpStatus}` : ''}
+                        ${log.error ? `<span title="${escapeHtml(log.error)}">${escapeHtml(log.error)}</span>` : ''}
+                        ${log.waitSeconds ? `Wait: ${log.waitSeconds}s` : ''}
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleString();
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str).replace(/[&<>"']/g, char => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[char]);
+        }
+
+        // Close modal on escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+        });
+
+        // Close modal on backdrop click
+        document.getElementById('station-modal').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) closeModal();
+        });
+
+        // Initial load
+        loadStations();
+        startAutoRefresh();
+        startLastUpdatedCounter();
+    </script>
+</body>
+</html>
