@@ -55,6 +55,9 @@ services:
     restart: unless-stopped
     working_dir: /app
     command: sh -c "npm install && node logger.js"
+    environment:
+      - MQTT_USER=${MQTT_USER:-admin}
+      - MQTT_PASSWORD=${MQTT_PASSWORD}
     volumes:
       - ./mqtt-logger:/app
       - ./data:/data
