@@ -14,6 +14,50 @@
             background: transparent !important;
             border: none !important;
         }
+        /* Health Grid - Compact */
+        .health-grid {
+            background: #f3f4f6;
+            padding: 8px;
+            border-radius: 4px;
+            margin-top: 8px;
+        }
+        .health-grid-title {
+            font-size: 10px;
+            color: #666;
+            margin-bottom: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .health-grid-title .legend {
+            display: flex;
+            gap: 8px;
+        }
+        .health-grid-title .legend span {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+        }
+        .legend-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 1px;
+        }
+        .health-grid-row {
+            display: grid;
+            grid-template-columns: repeat(24, 1fr);
+            gap: 1px;
+            margin-bottom: 1px;
+        }
+        .health-grid-cell {
+            height: 3px;
+            border-radius: 1px;
+        }
+        .health-cell-success { background: #22c55e; }
+        .health-cell-received { background: #3b82f6; }
+        .health-cell-post-error { background: #f97316; }
+        .health-cell-rejected { background: #ef4444; }
+        .health-cell-no-data { background: #d1d5db; }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
@@ -27,6 +71,7 @@
         let lastDataHash = '';
         let windCharts = [];
         let lastWindyUploads = {}; // Track last Windy upload per station
+        let receptionLogs = {}; // Track reception logs for health grid
         const POLL_INTERVAL = 5000; // 5 seconds
 
         // Load upload logs to get last Windy upload times
@@ -49,6 +94,87 @@
             } catch (e) {
                 // Upload logs may not exist yet, that's ok
             }
+        }
+
+        // Load reception logs for health grid
+        async function loadReceptionLogs() {
+            try {
+                const response = await fetch('/data/reception-logs.json?t=' + Date.now());
+                if (response.ok) {
+                    receptionLogs = await response.json();
+                }
+            } catch (e) {
+                // Reception logs may not exist yet, that's ok
+                receptionLogs = {};
+            }
+        }
+
+        // Get slot key for a timestamp (rounded to 5-minute interval)
+        function getSlotKey(timestamp) {
+            const date = new Date(timestamp);
+            const minutes = Math.floor(date.getMinutes() / 5) * 5;
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const hour = String(date.getHours()).padStart(2, '0');
+            const min = String(minutes).padStart(2, '0');
+            return `${year}-${month}-${day}-${hour}-${min}`;
+        }
+
+        // Build health grid HTML for a station
+        function buildHealthGridHtml(stationId) {
+            const stationLogs = receptionLogs[stationId];
+            if (!stationLogs || Object.keys(stationLogs).length === 0) {
+                return '';
+            }
+
+            const now = Date.now();
+            let html = `<div class="health-grid">
+                <div class="health-grid-title">
+                    <span>24h Station Health</span>
+                    <span class="legend">
+                        <span><div class="legend-dot health-cell-success"></div>OK</span>
+                        <span><div class="legend-dot health-cell-post-error"></div>Err</span>
+                        <span><div class="legend-dot health-cell-no-data"></div>None</span>
+                    </span>
+                </div>`;
+
+            // Build 12 rows x 24 columns (5-min intervals x hours)
+            for (let row = 0; row < 12; row++) {
+                html += '<div class="health-grid-row">';
+                for (let h = 23; h >= 0; h--) {
+                    const hourStart = now - (h * 60 * 60 * 1000);
+                    const hourDate = new Date(hourStart);
+                    hourDate.setMinutes(row * 5, 0, 0);
+                    const slotKey = getSlotKey(hourDate.getTime());
+                    const slot = stationLogs[slotKey];
+
+                    let cellClass = 'health-cell-no-data';
+                    let tooltip = 'No data';
+
+                    if (slot && slot.received) {
+                        if (slot.validationStatus === 'rejected') {
+                            cellClass = 'health-cell-rejected';
+                            tooltip = 'Rejected';
+                        } else if (slot.postStatus?.wu === 'error' || slot.postStatus?.windy === 'error') {
+                            cellClass = 'health-cell-post-error';
+                            tooltip = 'Post error';
+                        } else if (slot.postStatus?.wu === 'success' || slot.postStatus?.windy === 'success') {
+                            cellClass = 'health-cell-success';
+                            tooltip = 'OK';
+                        } else {
+                            cellClass = 'health-cell-received';
+                            tooltip = 'Received';
+                        }
+                    }
+
+                    html += `<div class="health-grid-cell ${cellClass}" title="${hourDate.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}: ${tooltip}"></div>`;
+                }
+                html += '</div>';
+            }
+
+            html += '</div>';
+            return html;
         }
 
         // All wind values are stored in km/h (Meshtastic converted from m/s in logger)
@@ -89,8 +215,9 @@
 
         async function loadData() {
             try {
-                // Load upload logs in parallel with station data
+                // Load logs in parallel with station data
                 loadUploadLogs();
+                loadReceptionLogs();
                 const response = await fetch('/data/stations.json?t=' + Date.now());
                 if (response.ok) {
                     const data = await response.json();
@@ -103,8 +230,15 @@
                     lastDataHash = dataHash;
 
                     // Update stations
+                    const twentyFourHoursAgo = Date.now() - (24 * 60 * 60 * 1000);
                     for (const [stationId, stationData] of Object.entries(data)) {
                         if (stationData.lastReading) {
+                            // Skip stations that haven't reported in 24 hours
+                            const lastSeen = new Date(stationData.lastSeen).getTime();
+                            if (!stationData.lastSeen || lastSeen < twentyFourHoursAgo) {
+                                delete stations[stationId];
+                                continue;
+                            }
                             const reading = stationData.lastReading;
                             stations[stationId] = {
                                 id: stationId,
@@ -127,7 +261,8 @@
                                 lastUpdate: stationData.lastSeen,
                                 history: stationData.history || [],
                                 longname: stationData.longname,
-                                shortname: stationData.shortname
+                                shortname: stationData.shortname,
+                                excludeWind: stationData.excludeWind || false
                             };
                         }
                     }
@@ -303,13 +438,16 @@
             Object.values(stations).forEach(station => {
                 if (!station.lat || !station.lon) return;
 
-                // Color by wind speed intensity
-                const color = getWindColor(station.windSpeed);
-                const dir = station.windDir;
-                const speed = station.windSpeed !== undefined ? Math.round(station.windSpeed) : '';
+                // Check if wind is excluded for this station
+                const windExcluded = station.excludeWind === true;
+
+                // Color by wind speed intensity (use gray for excluded)
+                const color = windExcluded ? '#6b7280' : getWindColor(station.windSpeed);
+                const dir = windExcluded ? undefined : station.windDir;
+                const speed = windExcluded ? '' : (station.windSpeed !== undefined ? Math.round(station.windSpeed) : '');
 
                 let iconHtml = '';
-                if (dir !== undefined && speed !== '') {
+                if (!windExcluded && dir !== undefined && speed !== '') {
                     // Pill-shaped badge with arrow and speed
                     const pillWidth = speed >= 100 ? 52 : speed >= 10 ? 44 : 38;
                     iconHtml = `<div style="
@@ -326,7 +464,7 @@
                         </svg>
                         <span style="color: white; font-weight: bold; font-size: 12px; font-family: Arial, sans-serif; line-height: 1;">${speed}</span>
                     </div>`;
-                } else if (speed !== '') {
+                } else if (!windExcluded && speed !== '') {
                     // Has speed but no direction - pill with just number
                     iconHtml = `<div style="
                         display: inline-flex;
@@ -338,7 +476,7 @@
                         <span style="color: white; font-weight: bold; font-size: 12px; font-family: Arial, sans-serif; line-height: 1;">${speed}</span>
                     </div>`;
                 } else {
-                    // No data - small gray dot
+                    // No data or wind excluded - small colored dot matching station type colors
                     const typeColor = station.type === 'FANET-RX' ? '#2563eb' :
                                 station.type === 'FANET-GS' || station.type === 'MQTT-FANET' ? '#16a34a' : '#9333ea';
                     iconHtml = `<div style="width: 12px; height: 12px; background: ${typeColor}; border-radius: 50%; border: 2px solid white;"></div>`;
@@ -383,10 +521,11 @@
         function createPopupContent(station) {
             const btnColor = station.type === 'FANET-RX' ? '#2563eb' :
                             station.type === 'FANET-GS' || station.type === 'MQTT-FANET' ? '#16a34a' : '#9333ea';
+            const showWind = !station.excludeWind && station.windSpeed !== undefined;
             return `<div style="min-width: 200px;">
                 <b>${station.shortname || station.longname || station.id}</b><br/>
                 <span style="font-size: 0.8em; color: #666;">${station.type}</span><br/>
-                ${station.windSpeed !== undefined ? `<b>Wind:</b> ${formatWindSpeed(station.windSpeed)} km/h ${station.windDir !== undefined ? getCardinalDirection(station.windDir) : ''}<br/>` : ''}
+                ${showWind ? `<b>Wind:</b> ${formatWindSpeed(station.windSpeed)} km/h ${station.windDir !== undefined ? getCardinalDirection(station.windDir) : ''}<br/>` : ''}
                 ${station.temp !== undefined ? `<b>Temp:</b> ${station.temp.toFixed(1)}°C<br/>` : ''}
                 <button onclick="window.selectStation('${station.id}')" style="margin-top: 8px; padding: 4px 8px; background: ${btnColor}; color: white; border: none; border-radius: 4px; cursor: pointer;">View Details</button>
             </div>`;
@@ -410,7 +549,9 @@
             tableContainer.classList.remove('hidden');
             noStationsMsg.classList.add('hidden');
 
-            tableBody.innerHTML = stationList.map(station => `
+            tableBody.innerHTML = stationList.map(station => {
+                const showWind = !station.excludeWind;
+                return `
                 <tr class="hover:bg-gray-50 cursor-pointer text-sm" onclick="window.selectStation('${station.id}')">
                     <td class="py-3">
                         <div class="font-medium">${station.shortname || station.id}</div>
@@ -419,17 +560,17 @@
                     <td class="py-3">
                         <span class="px-2 py-1 rounded text-xs ${station.type === 'FANET-RX' ? 'bg-blue-100 text-blue-700' : station.type === 'MQTT-FANET' || station.type === 'FANET-GS' ? 'bg-green-100 text-green-700' : 'bg-purple-100 text-purple-700'}">${station.type}</span>
                     </td>
-                    <td class="py-3">${station.windDir !== undefined ? `${Math.round(station.windDir)}° ${getCardinalDirection(station.windDir)}` : '-'}</td>
-                    <td class="py-3">${station.windSpeed !== undefined ? `${formatWindSpeed(station.windSpeed)} km/h` : '-'}</td>
-                    <td class="py-3">${station.windGust !== undefined ? `${formatWindSpeed(station.windGust)} km/h` : '-'}</td>
-                    <td class="py-3">${station.windLull !== undefined ? `${formatWindSpeed(station.windLull)} km/h` : '-'}</td>
+                    <td class="py-3">${showWind && station.windDir !== undefined ? `${Math.round(station.windDir)}° ${getCardinalDirection(station.windDir)}` : '-'}</td>
+                    <td class="py-3">${showWind && station.windSpeed !== undefined ? `${formatWindSpeed(station.windSpeed)} km/h` : '-'}</td>
+                    <td class="py-3">${showWind && station.windGust !== undefined ? `${formatWindSpeed(station.windGust)} km/h` : '-'}</td>
+                    <td class="py-3">${showWind && station.windLull !== undefined ? `${formatWindSpeed(station.windLull)} km/h` : '-'}</td>
                     <td class="py-3">${station.batteryPercent !== undefined ? `<span class="${getBatteryColor(station.batteryPercent)}">${Math.round(station.batteryPercent)}%</span>` : '-'}</td>
                     <td class="py-3">${formatVoltage(station.stationVoltage)}</td>
                     <td class="py-3">${formatVoltage(station.sensorVoltage)}</td>
                     <td class="py-3 text-xs text-gray-500">${station.lastUpdate ? new Date(station.lastUpdate).toLocaleTimeString() : '-'}</td>
                     <td class="py-3 text-xs text-gray-500">${formatLastWindy(station.id)}</td>
                 </tr>
-            `).join('');
+            `}).join('');
         }
 
         function showDetailModal() {
@@ -578,6 +719,127 @@
             }
         }
 
+        function createVoltageCharts(station) {
+            if (!station.history || station.history.length < 2) return;
+
+            const history = station.history;
+            const timestamps = history.map(r => new Date(r.timestamp));
+            const stationVoltages = history.map(r => r.stationVoltage);
+            const sensorVoltages = history.map(r => r.sensorVoltage);
+
+            const voltageCtx = document.getElementById('voltageChart');
+            if (voltageCtx) {
+                const datasets = [];
+
+                if (stationVoltages.some(v => v !== undefined)) {
+                    datasets.push({
+                        label: 'Station',
+                        data: timestamps.map((t, i) => ({ x: t, y: stationVoltages[i] })),
+                        borderColor: 'rgb(34, 197, 94)',
+                        backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0
+                    });
+                }
+
+                if (sensorVoltages.some(v => v !== undefined)) {
+                    datasets.push({
+                        label: 'Sensor',
+                        data: timestamps.map((t, i) => ({ x: t, y: sensorVoltages[i] })),
+                        borderColor: 'rgb(59, 130, 246)',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0
+                    });
+                }
+
+                if (datasets.length === 0) return;
+
+                const voltageChart = new Chart(voltageCtx, {
+                    type: 'line',
+                    data: { datasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { intersect: false, mode: 'index' },
+                        plugins: {
+                            legend: { position: 'top', labels: { boxWidth: 12, padding: 8 } },
+                            tooltip: {
+                                callbacks: {
+                                    label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(2) || '-'}V`
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: { unit: 'hour', displayFormats: { hour: 'HH:mm' } },
+                                title: { display: false }
+                            },
+                            y: {
+                                title: { display: true, text: 'Volts' }
+                            }
+                        }
+                    }
+                });
+                windCharts.push(voltageChart);
+            }
+        }
+
+        function createBatteryChart(station) {
+            if (!station.history || station.history.length < 2) return;
+
+            const history = station.history;
+            const timestamps = history.map(r => new Date(r.timestamp));
+            const batteryLevels = history.map(r => r.batteryPercent);
+
+            const batteryCtx = document.getElementById('batteryChart');
+            if (batteryCtx && batteryLevels.some(b => b !== undefined)) {
+                const batteryChart = new Chart(batteryCtx, {
+                    type: 'line',
+                    data: {
+                        datasets: [{
+                            label: 'Battery',
+                            data: timestamps.map((t, i) => ({ x: t, y: batteryLevels[i] })),
+                            borderColor: 'rgb(234, 179, 8)',
+                            backgroundColor: 'rgba(234, 179, 8, 0.1)',
+                            fill: true,
+                            tension: 0.3,
+                            pointRadius: 0
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { intersect: false, mode: 'index' },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: ctx => `Battery: ${ctx.parsed.y?.toFixed(0) || '-'}%`
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: { unit: 'hour', displayFormats: { hour: 'HH:mm' } },
+                                title: { display: false }
+                            },
+                            y: {
+                                min: 0,
+                                max: 100,
+                                title: { display: true, text: '%' }
+                            }
+                        }
+                    }
+                });
+                windCharts.push(batteryChart);
+            }
+        }
+
         function updateDetailModal() {
             const station = stations[selectedStation];
             if (!station) {
@@ -585,8 +847,11 @@
                 return;
             }
 
+            // Check if wind data should be shown
+            const showWind = !station.excludeWind;
+
             let stats = null;
-            if (station.history && station.history.length > 0) {
+            if (showWind && station.history && station.history.length > 0) {
                 const speeds = station.history.map(r => r.windSpeed).filter(s => s !== undefined);
                 const gusts = station.history.map(r => r.windGust).filter(g => g !== undefined);
                 const lulls = station.history.map(r => r.windLull).filter(l => l !== undefined);
@@ -603,6 +868,8 @@
 
             const hasPowerInfo = station.sensorVoltage !== undefined || station.stationVoltage !== undefined || station.batteryPercent !== undefined;
             const hasHistory = station.history && station.history.length >= 2;
+            const hasVoltageHistory = hasHistory && station.history.some(r => r.stationVoltage !== undefined || r.sensorVoltage !== undefined);
+            const hasBatteryHistory = hasHistory && station.history.some(r => r.batteryPercent !== undefined);
 
             destroyCharts();
 
@@ -622,7 +889,7 @@
                             </button>
                         </div>
 
-                        ${station.windSpeed !== undefined ? `
+                        ${showWind && station.windSpeed !== undefined ? `
                         <div class="border-t pt-4 mb-4">
                             <h3 class="text-sm font-semibold text-gray-700 mb-2">Wind - Current</h3>
                             <div class="grid grid-cols-2 gap-3">
@@ -633,7 +900,7 @@
                             </div>
                         </div>` : ''}
 
-                        ${stats ? `
+                        ${showWind && stats ? `
                         <div class="border-t pt-4 mb-4">
                             <h3 class="text-sm font-semibold text-gray-700 mb-2">Wind - Statistics (${stats.readingCount} readings)</h3>
                             <div class="grid grid-cols-2 gap-3">
@@ -644,7 +911,7 @@
                             </div>
                         </div>` : ''}
 
-                        ${hasHistory ? `
+                        ${showWind && hasHistory ? `
                         <div class="border-t pt-4 mb-4">
                             <h3 class="text-sm font-semibold text-gray-700 mb-2">Wind Speed (24h)</h3>
                             <div style="height: 200px;">
@@ -665,6 +932,22 @@
                                 ${station.stationVoltage !== undefined && station.stationVoltage !== null ? `<div><div class="text-xs text-gray-500">Station Voltage</div><div class="font-semibold">${station.stationVoltage.toFixed(2)}V</div></div>` : ''}
                                 ${station.sensorVoltage !== undefined && station.sensorVoltage !== null ? `<div><div class="text-xs text-gray-500">Sensor Voltage</div><div class="font-semibold">${station.sensorVoltage.toFixed(2)}V</div></div>` : ''}
                                 ${station.batteryPercent !== undefined ? `<div><div class="text-xs text-gray-500">Battery</div><div class="font-semibold ${getBatteryColor(station.batteryPercent)}">${Math.round(station.batteryPercent)}%</div></div>` : ''}
+                            </div>
+                        </div>` : ''}
+
+                        ${hasVoltageHistory ? `
+                        <div class="border-t pt-4 mb-4">
+                            <h3 class="text-sm font-semibold text-gray-700 mb-2">Voltage History (24h)</h3>
+                            <div style="height: 180px;">
+                                <canvas id="voltageChart"></canvas>
+                            </div>
+                        </div>` : ''}
+
+                        ${hasBatteryHistory ? `
+                        <div class="border-t pt-4 mb-4">
+                            <h3 class="text-sm font-semibold text-gray-700 mb-2">Battery Level (24h)</h3>
+                            <div style="height: 150px;">
+                                <canvas id="batteryChart"></canvas>
                             </div>
                         </div>` : ''}
 
@@ -689,6 +972,8 @@
                             </div>
                         </div>` : ''}
 
+                        ${buildHealthGridHtml(selectedStation)}
+
                         <div class="border-t pt-4">
                             <div class="text-xs text-gray-500">Last Update</div>
                             <div class="text-sm">${station.lastUpdate ? new Date(station.lastUpdate).toLocaleString() : 'N/A'}</div>
@@ -698,8 +983,14 @@
             `;
 
             // Create charts after DOM is updated
-            if (hasHistory) {
+            if (showWind && hasHistory) {
                 setTimeout(() => createWindCharts(station), 50);
+            }
+            if (hasVoltageHistory) {
+                setTimeout(() => createVoltageCharts(station), 50);
+            }
+            if (hasBatteryHistory) {
+                setTimeout(() => createBatteryChart(station), 50);
             }
         }
 

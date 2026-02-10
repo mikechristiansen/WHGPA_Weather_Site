@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const uploadLogger = require('./upload-logger');
+const receptionLogger = require('./reception-logger');
 
 const app = express();
 app.use(express.json());
@@ -112,6 +113,8 @@ app.put('/api/config/stations/:id', (req, res) => {
       tempOnlyIfWind: stationData.options?.tempOnlyIfWind ?? true,
       humidityOnlyIfWind: stationData.options?.humidityOnlyIfWind ?? false,
       rain: stationData.options?.rain ?? true,
+      publicApi: stationData.options?.publicApi ?? false,
+      excludeWind: stationData.options?.excludeWind ?? false,
       maxRain1h: stationData.options?.maxRain1h ?? 100,
       maxRain1d: stationData.options?.maxRain1d ?? 500
     }
@@ -150,6 +153,8 @@ app.post('/api/config/stations', (req, res) => {
       tempOnlyIfWind: stationData.options?.tempOnlyIfWind ?? true,
       humidityOnlyIfWind: stationData.options?.humidityOnlyIfWind ?? false,
       rain: stationData.options?.rain ?? true,
+      publicApi: stationData.options?.publicApi ?? false,
+      excludeWind: stationData.options?.excludeWind ?? false,
       maxRain1h: stationData.options?.maxRain1h ?? 100,
       maxRain1d: stationData.options?.maxRain1d ?? 500
     }
@@ -209,6 +214,88 @@ app.get('/api/logs', (req, res) => {
 app.get('/api/logs/stats', (req, res) => {
   const stats = uploadLogger.getStats();
   res.json(stats);
+});
+
+// GET /api/public/weather - Public API for weather station data
+// Returns stations marked with publicApi: true, along with their locations and latest values
+// Add ?pretty=true for human-readable formatted output
+app.get('/api/public/weather', (req, res) => {
+  const config = loadConfig();
+  const stationsData = loadStations();
+  const prettyPrint = req.query.pretty === 'true';
+
+  const publicStations = [];
+
+  for (const [id, stationConfig] of Object.entries(config.stations)) {
+    // Only include stations with publicApi enabled
+    if (!stationConfig.options?.publicApi) continue;
+
+    // Try to find station data with different ID formats
+    // Config may have "1358344362" but stations.json may have "meshtastic-1358344362"
+    let stationData = stationsData[id];
+    if (!stationData && /^\d+$/.test(id)) {
+      stationData = stationsData[`meshtastic-${id}`];
+    }
+
+    const lastReading = stationData?.lastReading || {};
+    const rainEnabled = stationConfig.options?.rain ?? false;
+    const excludeWind = stationConfig.options?.excludeWind ?? false;
+
+    const weather = {
+      timestamp: lastReading.timestamp ?? null,
+      temperature: lastReading.temp ?? null,
+      humidity: lastReading.humidity ?? null,
+      pressure: lastReading.pressure ?? null
+    };
+
+    // Only include wind data if not excluded
+    if (!excludeWind) {
+      weather.windSpeed = lastReading.windSpeed ?? null;
+      weather.windGust = lastReading.windGust ?? null;
+      weather.windDirection = lastReading.windDir ?? null;
+    }
+
+    // Only include rainfall if rain reporting is enabled for this station
+    if (rainEnabled) {
+      weather.rainfall1h = lastReading.rainfall1h ?? null;
+    }
+
+    publicStations.push({
+      id,
+      name: stationConfig.name,
+      type: stationData?.type || getStationType(id),
+      location: {
+        latitude: lastReading.lat ?? null,
+        longitude: lastReading.lon ?? null,
+        altitude: lastReading.alt ?? null
+      },
+      weather,
+      lastSeen: stationData?.lastSeen ?? null
+    });
+  }
+
+  // Sort by name
+  publicStations.sort((a, b) => a.name.localeCompare(b.name));
+
+  const response = {
+    generated: new Date().toISOString(),
+    count: publicStations.length,
+    stations: publicStations
+  };
+
+  if (prettyPrint) {
+    res.setHeader('Content-Type', 'application/json');
+    res.send(JSON.stringify(response, null, 2));
+  } else {
+    res.json(response);
+  }
+});
+
+// GET /api/health-grid - Get health grid data for all configured stations
+app.get('/api/health-grid', (req, res) => {
+  const config = loadConfig();
+  const grids = receptionLogger.getHealthGridAll(config.stations);
+  res.json(grids);
 });
 
 // Start server

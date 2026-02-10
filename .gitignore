@@ -14,6 +14,9 @@ mosquitto/certs/
 mosquitto/config/acl
 mosquitto/config/passwd
 
+# Weather service credentials (sensitive)
+mqtt-logger/weather-services.json
+
 # Nginx auth files (sensitive)
 .htpasswd
 

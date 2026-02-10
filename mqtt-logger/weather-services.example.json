@@ -1,0 +1,26 @@
+{
+  "stations": {
+    "1234567890": {
+      "name": "EXAMPLE_STATION",
+      "windy": {
+        "stationId": "your-windy-station-id",
+        "stationPassword": "your-windy-station-password",
+        "stationType": "WS85"
+      },
+      "wunderground": {
+        "id": "YOUR_WU_STATION_ID",
+        "password": "your-wu-password"
+      },
+      "options": {
+        "tempOnlyIfWind": true,
+        "humidityOnlyIfWind": false,
+        "rain": true,
+        "publicApi": false,
+        "excludeWind": false,
+        "maxRain1h": 100,
+        "maxRain1d": 500
+      }
+    }
+  },
+  "windyRateLimitMinutes": 5
+}

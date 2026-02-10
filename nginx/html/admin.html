@@ -426,6 +426,54 @@
             background: #4a4a6a;
             min-height: 2px;
         }
+        /* Health Grid - Compact */
+        .health-grid-container {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px dashed #4a4a6a;
+        }
+        .health-grid {
+            background: #2a2a4a;
+            padding: 6px 8px;
+            border-radius: 4px;
+        }
+        .health-grid-title {
+            font-size: 9px;
+            color: #666;
+            margin-bottom: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .health-grid-title .legend {
+            display: flex;
+            gap: 8px;
+        }
+        .health-grid-title .legend span {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+        }
+        .legend-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 1px;
+        }
+        .health-grid-table {
+            display: grid;
+            grid-template-columns: repeat(24, 1fr);
+            gap: 1px;
+        }
+        .health-grid-cell {
+            height: 6px;
+            border-radius: 1px;
+            cursor: pointer;
+        }
+        .health-cell-success { background: #2ecc71; }
+        .health-cell-received { background: #3498db; }
+        .health-cell-post-error { background: #f39c12; }
+        .health-cell-rejected { background: #e74c3c; }
+        .health-cell-no-data { background: #3a3a5a; }
     </style>
 </head>
 <body>
@@ -576,15 +624,21 @@
                     </div>
                 </div>
 
-                <div class="section-title">Windy</div>
+                <div class="section-title">Windy (V2 API)</div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label>API Key</label>
-                        <input type="text" id="windy-apikey">
+                        <label>Station ID</label>
+                        <input type="text" id="windy-stationid" placeholder="e.g. f0cbc4aa">
                     </div>
                     <div class="form-group">
-                        <label>Station Number</label>
-                        <input type="text" id="windy-station" placeholder="e.g. 0">
+                        <label>Station Password</label>
+                        <input type="text" id="windy-stationpassword" placeholder="64-character hex string">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Station Type</label>
+                        <input type="text" id="windy-stationtype" placeholder="e.g. WS85" value="WS85">
                     </div>
                 </div>
 
@@ -603,6 +657,16 @@
                     <div class="checkbox-group">
                         <input type="checkbox" id="opt-rain">
                         <label for="opt-rain">Enable rain reporting</label>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="opt-public-api">
+                        <label for="opt-public-api">Include in public API</label>
+                    </div>
+                </div>
+                <div class="form-row" style="margin-top: 10px;">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="opt-exclude-wind">
+                        <label for="opt-exclude-wind">Exclude wind data (hides wind on map and excludes from uploads)</label>
                     </div>
                 </div>
                 <div class="form-row" style="margin-top: 10px;">
@@ -689,12 +753,14 @@
         // Load stations with their last log entries and history
         async function loadStations() {
             try {
-                const [configRes, logsRes] = await Promise.all([
+                const [configRes, logsRes, healthGridRes] = await Promise.all([
                     fetch('/api/config'),
-                    fetch('/api/logs?limit=1000')  // Get more logs for sparklines
+                    fetch('/api/logs?limit=1000'),  // Get more logs for sparklines
+                    fetch('/api/health-grid')
                 ]);
                 const config = await configRes.json();
                 const logs = await logsRes.json();
+                const healthGrids = await healthGridRes.json();
 
                 // Update last refresh time
                 lastUpdateTime = Date.now();
@@ -709,13 +775,22 @@
                     }
                 }
 
+                // Build health grid map by station ID
+                const healthGridMap = {};
+                for (const grid of healthGrids) {
+                    healthGridMap[grid.stationId] = grid;
+                }
+
                 // Build history for sparklines (last 24 hours, hourly buckets)
                 const history = buildSparklineHistory(logs);
 
                 // Update health dashboard
                 updateHealthDashboard(config.stations, lastLogs, logs);
 
-                renderStations(config.stations, lastLogs, history);
+                renderStations(config.stations, lastLogs, history, healthGridMap);
+
+                // Render health grids after DOM is updated
+                setTimeout(renderAllHealthGrids, 0);
             } catch (err) {
                 document.getElementById('station-list').innerHTML = 'Error loading stations: ' + err.message;
             }
@@ -811,6 +886,99 @@
             }).join('') + '</div>';
         }
 
+        // Get station ID for health grid (handles numeric meshtastic IDs)
+        function getHealthGridStationId(configId) {
+            if (/^\d+$/.test(configId)) {
+                return `meshtastic-${configId}`;
+            }
+            return configId;
+        }
+
+        // Render all health grids after stations are loaded
+        function renderAllHealthGrids() {
+            for (const stationId of Object.keys(currentHealthGridMap)) {
+                const container = document.getElementById(`health-grid-${stationId}`);
+                if (container) {
+                    renderHealthGrid(stationId, container);
+                }
+            }
+        }
+
+        // Render health grid for a station (compact version)
+        function renderHealthGrid(stationId, container) {
+            const gridData = currentHealthGridMap[stationId];
+
+            if (!gridData || !gridData.grid) {
+                container.innerHTML = '<div class="health-grid-title">No data yet</div>';
+                return;
+            }
+
+            // Build compact grid HTML - 12 rows x 24 columns
+            let html = `<div class="health-grid-title">
+                <span>24h Health (5-min intervals)</span>
+                <span class="legend">
+                    <span><div class="legend-dot health-cell-success"></div>OK</span>
+                    <span><div class="legend-dot health-cell-post-error"></div>Err</span>
+                    <span><div class="legend-dot health-cell-no-data"></div>None</span>
+                </span>
+            </div>`;
+
+            // Data rows (12 rows for 5-minute intervals, stacked vertically)
+            for (let row = 0; row < 12; row++) {
+                const minute = row * 5;
+                html += '<div class="health-grid-table">';
+                for (const hour of gridData.grid) {
+                    const slot = hour.slots[row];
+                    const cellClass = getHealthCellClass(slot);
+                    const tooltip = getHealthCellTooltip(hour.hour, minute, slot);
+                    html += `<div class="health-grid-cell ${cellClass}" title="${escapeHtml(tooltip)}"></div>`;
+                }
+                html += '</div>';
+            }
+
+            container.innerHTML = html;
+        }
+
+        // Get CSS class for health grid cell
+        function getHealthCellClass(slot) {
+            if (!slot || !slot.received) return 'health-cell-no-data';
+            if (slot.status === 'rejected') return 'health-cell-rejected';
+            if (slot.status === 'post_error') return 'health-cell-post-error';
+            if (slot.status === 'success') return 'health-cell-success';
+            if (slot.status === 'received') return 'health-cell-received';
+            return 'health-cell-no-data';
+        }
+
+        // Get tooltip for health grid cell
+        function getHealthCellTooltip(hourStr, minute, slot) {
+            const time = new Date(hourStr);
+            time.setMinutes(minute);
+            const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+            if (!slot || !slot.received) {
+                return `${timeStr}: No data received`;
+            }
+
+            if (slot.status === 'rejected') {
+                const reasons = slot.rejectionReasons?.join(', ') || 'validation failed';
+                return `${timeStr}: Rejected - ${reasons}`;
+            }
+
+            if (slot.status === 'post_error') {
+                return `${timeStr}: Data received, post failed`;
+            }
+
+            if (slot.status === 'success') {
+                return `${timeStr}: OK`;
+            }
+
+            if (slot.status === 'received') {
+                return `${timeStr}: Received (rate limited or no service configured)`;
+            }
+
+            return `${timeStr}: Unknown status`;
+        }
+
         // Determine station type from ID
         function getStationType(id) {
             if (id.startsWith('fanet-rx-')) return 'FANET-RX';
@@ -829,8 +997,13 @@
 
         const STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
 
-        function renderStations(stations, lastLogs = {}, history = {}) {
+        // Store health grid data for toggle access
+        let currentHealthGridMap = {};
+
+        function renderStations(stations, lastLogs = {}, history = {}, healthGridMap = {}) {
             const container = document.getElementById('station-list');
+            currentHealthGridMap = healthGridMap;
+
             if (Object.keys(stations).length === 0) {
                 container.innerHTML = '<p style="color: #888;">No stations configured.</p>';
                 return;
@@ -870,6 +1043,7 @@
                 const wuSparkline = station.wunderground ? generateSparkline(`${id}-wu`, history) : '';
                 const windySparkline = station.windy ? generateSparkline(`${id}-windy`, history) : '';
                 const staleClass = isStale ? 'station-stale' : '';
+                const gridId = getHealthGridStationId(id);
 
                 return `
                 <div class="station-card ${staleClass}">
@@ -894,7 +1068,7 @@
                         </div>
                         <div>
                             <strong style="color: #aaa; font-size: 12px;">Windy:</strong>
-                            ${station.windy ? `<span style="color: #27ae60;">Station ${escapeHtml(station.windy.station)}</span>` : '<span style="color: #666;">Not configured</span>'}
+                            ${station.windy?.stationId ? `<span style="color: #27ae60;">ID: ${escapeHtml(station.windy.stationId)}</span>` : '<span style="color: #666;">Not configured</span>'}
                         </div>
                     </div>
                     <div class="station-logs">
@@ -906,8 +1080,12 @@
                         ${station.wunderground ? `<div class="sparkline-item"><div class="sparkline-label">WU (24h)</div>${wuSparkline}</div>` : ''}
                         ${station.windy ? `<div class="sparkline-item"><div class="sparkline-label">Windy (24h)</div>${windySparkline}</div>` : ''}
                     </div>` : ''}
+                    <div class="health-grid-container">
+                        <div id="health-grid-${escapeHtml(gridId)}" class="health-grid"></div>
+                    </div>
                     <div style="font-size: 12px; color: #888; margin-top: 10px;">
-                        Options: ${station.options.tempOnlyIfWind ? 'Temp w/wind' : ''}
+                        Options: ${station.options.excludeWind ? '<span style="color: #f39c12;">Wind excluded</span>' : ''}
+                        ${station.options.tempOnlyIfWind ? 'Temp w/wind' : ''}
                         ${station.options.humidityOnlyIfWind ? 'Humidity w/wind' : ''}
                         ${station.options.rain ? 'Rain enabled' : 'Rain disabled'}
                     </div>
@@ -1017,8 +1195,11 @@
             document.getElementById('station-id-select').disabled = false;
             document.getElementById('opt-temp-wind').checked = true;
             document.getElementById('opt-rain').checked = true;
+            document.getElementById('opt-public-api').checked = false;
+            document.getElementById('opt-exclude-wind').checked = false;
             document.getElementById('opt-maxrain1h').value = 100;
             document.getElementById('opt-maxrain1d').value = 500;
+            document.getElementById('windy-stationtype').value = 'WS85';
             document.getElementById('station-modal').classList.add('active');
             await populateStationDropdown('Meshtastic');
         }
@@ -1045,18 +1226,30 @@
 
                 // Populate dropdown and select the current station
                 await populateStationDropdown(stationType);
-                document.getElementById('station-id-select').value = id;
-                document.getElementById('station-id-select').disabled = true;
+                const selectEl = document.getElementById('station-id-select');
+                // If station not in dropdown (hasn't sent data recently), add it
+                if (!Array.from(selectEl.options).some(opt => opt.value === id)) {
+                    const opt = document.createElement('option');
+                    opt.value = id;
+                    opt.textContent = `${station.name} (${id})`;
+                    opt.dataset.name = station.name;
+                    selectEl.appendChild(opt);
+                }
+                selectEl.value = id;
+                selectEl.disabled = true;
 
                 document.getElementById('wu-id').value = station.wunderground?.id || '';
                 document.getElementById('wu-password').value = station.wunderground?.password || '';
 
-                document.getElementById('windy-apikey').value = station.windy?.apiKey || '';
-                document.getElementById('windy-station').value = station.windy?.station || '';
+                document.getElementById('windy-stationid').value = station.windy?.stationId || '';
+                document.getElementById('windy-stationpassword').value = station.windy?.stationPassword || '';
+                document.getElementById('windy-stationtype').value = station.windy?.stationType || 'WS85';
 
                 document.getElementById('opt-temp-wind').checked = station.options?.tempOnlyIfWind ?? true;
                 document.getElementById('opt-humidity-wind').checked = station.options?.humidityOnlyIfWind ?? false;
                 document.getElementById('opt-rain').checked = station.options?.rain ?? true;
+                document.getElementById('opt-public-api').checked = station.options?.publicApi ?? false;
+                document.getElementById('opt-exclude-wind').checked = station.options?.excludeWind ?? false;
                 document.getElementById('opt-maxrain1h').value = station.options?.maxRain1h ?? 100;
                 document.getElementById('opt-maxrain1d').value = station.options?.maxRain1d ?? 500;
 
@@ -1084,6 +1277,8 @@
                     tempOnlyIfWind: document.getElementById('opt-temp-wind').checked,
                     humidityOnlyIfWind: document.getElementById('opt-humidity-wind').checked,
                     rain: document.getElementById('opt-rain').checked,
+                    publicApi: document.getElementById('opt-public-api').checked,
+                    excludeWind: document.getElementById('opt-exclude-wind').checked,
                     maxRain1h: parseInt(document.getElementById('opt-maxrain1h').value) || 100,
                     maxRain1d: parseInt(document.getElementById('opt-maxrain1d').value) || 500
                 }
@@ -1095,10 +1290,11 @@
                 data.wunderground = { id: wuId, password: wuPassword };
             }
 
-            const windyApiKey = document.getElementById('windy-apikey').value;
-            const windyStation = document.getElementById('windy-station').value;
-            if (windyApiKey && windyStation) {
-                data.windy = { apiKey: windyApiKey, station: windyStation };
+            const windyStationId = document.getElementById('windy-stationid').value;
+            const windyStationPassword = document.getElementById('windy-stationpassword').value;
+            const windyStationType = document.getElementById('windy-stationtype').value || 'WS85';
+            if (windyStationId && windyStationPassword) {
+                data.windy = { stationId: windyStationId, stationPassword: windyStationPassword, stationType: windyStationType };
             }
 
             try {

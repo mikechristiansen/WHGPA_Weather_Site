@@ -4,6 +4,7 @@ const path = require('path');
 const https = require('https');
 const chokidar = require('chokidar');
 const uploadLogger = require('./upload-logger');
+const receptionLogger = require('./reception-logger');
 const { startServer } = require('./admin-api');
 
 // Configuration
@@ -56,6 +57,15 @@ function cleanOldData() {
     }
   }
   
+  // Remove stale unconfigured stations entirely
+  for (const stationId in stationsData) {
+    const lastSeen = new Date(stationsData[stationId].lastSeen).getTime();
+    if (lastSeen < cutoff && !getStationConfig(stationId)) {
+      delete stationsData[stationId];
+      console.log(`Removed stale unconfigured station: ${stationId}`);
+    }
+  }
+
   saveData();
   console.log('Cleaned old data');
 }
@@ -65,17 +75,38 @@ function saveData() {
   fs.writeFileSync(dataFile, JSON.stringify(stationsData, null, 2));
 }
 
+// Get station config by ID (checks multiple ID formats)
+function getStationConfig(stationId) {
+  // Direct match
+  if (weatherConfig.stations[stationId]) {
+    return weatherConfig.stations[stationId];
+  }
+  // Try numeric ID for meshtastic stations
+  const numericId = stationId.replace(/^meshtastic-/, '');
+  if (weatherConfig.stations[numericId]) {
+    return weatherConfig.stations[numericId];
+  }
+  return null;
+}
+
 // Store reading
 function storeReading(stationId, type, data) {
+  // Get station config to check for options like excludeWind
+  const cfg = getStationConfig(stationId);
+  const excludeWind = cfg?.options?.excludeWind ?? false;
+
   if (!stationsData[stationId]) {
     stationsData[stationId] = {
       id: stationId,
       type: type,
-      history: []
+      history: [],
+      excludeWind: excludeWind
     };
   } else {
     // Update type in case it changed (e.g., FANET-Direct -> MQTT-FANET)
     stationsData[stationId].type = type;
+    // Update excludeWind in case config changed
+    stationsData[stationId].excludeWind = excludeWind;
   }
 
   // Carry forward values from previous reading that aren't in new data
@@ -150,10 +181,110 @@ function validateRain(rain1h, rain1d, cfg) {
   return { validRain1h, validRain1d };
 }
 
+// Default validation bounds for weather data
+const DEFAULT_VALIDATION_BOUNDS = {
+  temperature: { min: -50, max: 60 },       // Celsius
+  windSpeed: { min: 0, max: 200 },          // km/h (storage format)
+  windGust: { min: 0, max: 300 },           // km/h
+  windDirection: { min: 0, max: 360 },      // Degrees
+  humidity: { min: 0, max: 100 },           // Percent
+  pressure: { min: 85000, max: 110000 }     // Pa
+};
+
+// Validate weather data and return validation result
+function validateWeatherData(data, cfg = {}, stationName = 'Unknown') {
+  const bounds = { ...DEFAULT_VALIDATION_BOUNDS };
+
+  const result = {
+    status: 'valid',
+    reasons: [],
+    cleanedData: { ...data }
+  };
+
+  // Validate temperature
+  if (data.temp !== undefined && data.temp !== null) {
+    if (data.temp < bounds.temperature.min || data.temp > bounds.temperature.max) {
+      result.reasons.push(`temperature_out_of_range:${data.temp}`);
+      console.log(`[${stationName}] Rejected temperature: ${data.temp}C (valid: ${bounds.temperature.min} to ${bounds.temperature.max})`);
+      result.cleanedData.temp = undefined;
+    }
+  }
+
+  // Validate wind speed (stored in km/h)
+  if (data.windSpeed !== undefined && data.windSpeed !== null) {
+    if (data.windSpeed < bounds.windSpeed.min || data.windSpeed > bounds.windSpeed.max) {
+      result.reasons.push(`wind_speed_out_of_range:${data.windSpeed}`);
+      console.log(`[${stationName}] Rejected wind speed: ${data.windSpeed}km/h (valid: ${bounds.windSpeed.min} to ${bounds.windSpeed.max})`);
+      result.cleanedData.windSpeed = undefined;
+    }
+  }
+
+  // Validate wind gust
+  if (data.windGust !== undefined && data.windGust !== null) {
+    if (data.windGust < bounds.windGust.min || data.windGust > bounds.windGust.max) {
+      result.reasons.push(`wind_gust_out_of_range:${data.windGust}`);
+      console.log(`[${stationName}] Rejected wind gust: ${data.windGust}km/h (valid: ${bounds.windGust.min} to ${bounds.windGust.max})`);
+      result.cleanedData.windGust = undefined;
+    }
+  }
+
+  // Validate wind direction
+  if (data.windDir !== undefined && data.windDir !== null) {
+    if (data.windDir < bounds.windDirection.min || data.windDir > bounds.windDirection.max) {
+      result.reasons.push(`wind_direction_out_of_range:${data.windDir}`);
+      console.log(`[${stationName}] Rejected wind direction: ${data.windDir} (valid: ${bounds.windDirection.min} to ${bounds.windDirection.max})`);
+      result.cleanedData.windDir = undefined;
+    }
+  }
+
+  // Validate humidity
+  if (data.humidity !== undefined && data.humidity !== null) {
+    if (data.humidity < bounds.humidity.min || data.humidity > bounds.humidity.max) {
+      result.reasons.push(`humidity_out_of_range:${data.humidity}`);
+      console.log(`[${stationName}] Rejected humidity: ${data.humidity}% (valid: ${bounds.humidity.min} to ${bounds.humidity.max})`);
+      result.cleanedData.humidity = undefined;
+    }
+  }
+
+  // Validate pressure (stored in Pa)
+  if (data.pressure !== undefined && data.pressure !== null) {
+    if (data.pressure < bounds.pressure.min || data.pressure > bounds.pressure.max) {
+      result.reasons.push(`pressure_out_of_range:${data.pressure}`);
+      console.log(`[${stationName}] Rejected pressure: ${data.pressure}Pa (valid: ${bounds.pressure.min} to ${bounds.pressure.max})`);
+      result.cleanedData.pressure = undefined;
+    }
+  }
+
+  // Cross-field validation: gust should be >= speed (warning only)
+  if (result.cleanedData.windSpeed !== undefined &&
+      result.cleanedData.windGust !== undefined &&
+      result.cleanedData.windGust < result.cleanedData.windSpeed) {
+    console.log(`[${stationName}] Warning: wind gust (${data.windGust}) < wind speed (${data.windSpeed})`);
+  }
+
+  // Determine overall status
+  if (result.reasons.length > 0) {
+    const rejectedFields = result.reasons.filter(r => r.includes('out_of_range')).length;
+    const weatherFields = ['temp', 'windSpeed', 'windGust', 'windDir', 'humidity', 'pressure'];
+    const presentFields = weatherFields.filter(f => data[f] !== undefined && data[f] !== null).length;
+
+    if (rejectedFields === presentFields && presentFields > 0) {
+      result.status = 'rejected';
+    } else if (rejectedFields > 0) {
+      result.status = 'partial';
+    }
+  }
+
+  return result;
+}
+
 // Post to Weather Underground
-async function postToWeatherUnderground(stationFromId, payload, timestamp, source = 'MQTT') {
+async function postToWeatherUnderground(stationFromId, payload, timestamp, source = 'MQTT', logStationId = null) {
   const cfg = weatherConfig.stations[stationFromId];
   if (!cfg || !cfg.wunderground) return;
+
+  // Use logStationId for reception logger (may differ from config ID for Meshtastic)
+  const receptionId = logStationId || stationFromId;
 
   // Check rate limit (2 minutes)
   const rateLimitMs = (weatherConfig.wuRateLimitMinutes || 2) * 60 * 1000;
@@ -178,13 +309,15 @@ async function postToWeatherUnderground(stationFromId, payload, timestamp, sourc
     return;
   }
 
-  const hasWind = payload.wind_speed !== undefined;
+  // Check if wind data should be excluded
+  const excludeWind = cfg.options?.excludeWind ?? false;
+  const hasWind = !excludeWind && payload.wind_speed !== undefined;
   const wuDateUtc = new Date(timestamp * 1000).toISOString().slice(0, 19).replace('T', ' ');
 
   // Parse values
-  const windSpeed = parseFloat(payload.wind_speed);
-  const windGust = parseFloat(payload.wind_gust);
-  const windDir = parseFloat(payload.wind_direction);
+  const windSpeed = excludeWind ? NaN : parseFloat(payload.wind_speed);
+  const windGust = excludeWind ? NaN : parseFloat(payload.wind_gust);
+  const windDir = excludeWind ? NaN : parseFloat(payload.wind_direction);
   const tempC = parseFloat(payload.temperature);
   let humidity = parseFloat(payload.relative_humidity);
   if (humidity === 0) humidity = NaN;
@@ -244,6 +377,7 @@ async function postToWeatherUnderground(stationFromId, payload, timestamp, sourc
         source: source,
         httpStatus: result.status
       });
+      receptionLogger.updatePostStatus(receptionId, 'wu', 'success');
     } else {
       console.log(`[${cfg.name}] WU error: ${result.status} - ${result.data}`);
       uploadLogger.addLog({
@@ -255,6 +389,7 @@ async function postToWeatherUnderground(stationFromId, payload, timestamp, sourc
         httpStatus: result.status,
         error: result.data
       });
+      receptionLogger.updatePostStatus(receptionId, 'wu', 'error');
     }
   } catch (err) {
     console.error(`[${cfg.name}] WU request failed:`, err.message);
@@ -266,13 +401,23 @@ async function postToWeatherUnderground(stationFromId, payload, timestamp, sourc
       source: source,
       error: err.message
     });
+    receptionLogger.updatePostStatus(receptionId, 'wu', 'error');
   }
 }
 
-// Post to Windy
-async function postToWindy(stationFromId, payload, timestamp, source = 'MQTT') {
+// Post to Windy (V2 API)
+async function postToWindy(stationFromId, payload, timestamp, source = 'MQTT', logStationId = null) {
   const cfg = weatherConfig.stations[stationFromId];
   if (!cfg || !cfg.windy) return;
+
+  // Use logStationId for reception logger (may differ from config ID for Meshtastic)
+  const receptionId = logStationId || stationFromId;
+
+  // V2 API requires stationId and stationPassword
+  if (!cfg.windy.stationId || !cfg.windy.stationPassword) {
+    console.log(`[${cfg.name}] Windy V2 not configured (missing stationId or stationPassword)`);
+    return;
+  }
 
   // Check rate limit (5 minutes)
   const rateLimitMs = (weatherConfig.windyRateLimitMinutes || 5) * 60 * 1000;
@@ -297,22 +442,23 @@ async function postToWindy(stationFromId, payload, timestamp, source = 'MQTT') {
     return;
   }
 
-  const hasWind = payload.wind_speed !== undefined;
-  const updatedAt = new Date(timestamp * 1000).toISOString();
+  // Check if wind data should be excluded
+  const excludeWind = cfg.options?.excludeWind ?? false;
+  const hasWind = !excludeWind && payload.wind_speed !== undefined;
 
-  // Parse values (Windy expects m/s for wind)
-  const windSpeed = parseFloat(payload.wind_speed);
-  const windGust = parseFloat(payload.wind_gust);
-  const windDir = parseFloat(payload.wind_direction);
+  // Parse values (Windy V2 expects m/s for wind)
+  const windSpeed = excludeWind ? NaN : parseFloat(payload.wind_speed);
+  const windGust = excludeWind ? NaN : parseFloat(payload.wind_gust);
+  const windDir = excludeWind ? NaN : parseFloat(payload.wind_direction);
   const tempC = parseFloat(payload.temperature);
   let humidity = parseFloat(payload.relative_humidity);
   if (humidity === 0) humidity = NaN;
 
-  // Pressure conversion (Pa → hPa)
+  // Pressure - V2 API expects Pa (not hPa), so don't divide by 100
   let pressure = parseFloat(payload.barometric_pressure);
   if (!isNaN(pressure)) {
-    pressure /= 100;
-    if (pressure < 850) pressure = NaN;
+    // Sanity check: pressure should be around 85000-110000 Pa
+    if (pressure < 85000) pressure = NaN;
   }
 
   // Validate rain
@@ -322,25 +468,28 @@ async function postToWindy(stationFromId, payload, timestamp, source = 'MQTT') {
     cfg
   );
 
-  // Build params
+  // Build params for V2 API
   const params = {
-    station: cfg.windy.station,
-    time: updatedAt
+    id: cfg.windy.stationId,
+    PASSWORD: cfg.windy.stationPassword,
+    ts: Math.floor(timestamp),  // Unix timestamp in seconds
+    stationtype: cfg.windy.stationType || 'WS85',
+    softwaretype: isFanet ? 'FANET' : 'Meshtastic'
   };
 
-  if (!isNaN(windDir)) params.winddir = windDir;
+  if (!isNaN(windDir)) params.winddir = Math.round(windDir);
   if (!isNaN(windSpeed)) params.wind = windSpeed.toFixed(1);
   if (!isNaN(windGust)) params.gust = windGust.toFixed(1);
   if (!isNaN(tempC) && (!cfg.options.tempOnlyIfWind || hasWind)) params.temp = tempC.toFixed(1);
-  if (!isNaN(humidity) && (!cfg.options.humidityOnlyIfWind || hasWind)) params.rh = humidity.toFixed(0);
-  if (!isNaN(pressure)) params.pressure = pressure.toFixed(1);
+  if (!isNaN(humidity) && (!cfg.options.humidityOnlyIfWind || hasWind)) params.humidity = Math.round(humidity);
+  if (!isNaN(pressure)) params.pressure = Math.round(pressure);
   if (cfg.options.rain && validRain1h !== null) params.precip = validRain1h.toFixed(1);
 
   const query = Object.entries(params)
     .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
     .join('&');
 
-  const url = `https://stations.windy.com/pws/update/${cfg.windy.apiKey}?${query}`;
+  const url = `https://stations.windy.com/api/v2/observation/update?${query}`;
 
   try {
     const result = await httpsGet(url);
@@ -348,7 +497,7 @@ async function postToWindy(stationFromId, payload, timestamp, source = 'MQTT') {
       lastWindyPost[stationFromId] = now;
       // Only log to console for non-FANET stations
       if (!isFanet) {
-        console.log(`[${cfg.name}] Posted to Windy`);
+        console.log(`[${cfg.name}] Posted to Windy V2`);
       }
       uploadLogger.addLog({
         service: 'windy',
@@ -358,8 +507,9 @@ async function postToWindy(stationFromId, payload, timestamp, source = 'MQTT') {
         source: source,
         httpStatus: result.status
       });
+      receptionLogger.updatePostStatus(receptionId, 'windy', 'success');
     } else {
-      console.log(`[${cfg.name}] Windy error: ${result.status} - ${result.data}`);
+      console.log(`[${cfg.name}] Windy V2 error: ${result.status} - ${result.data}`);
       uploadLogger.addLog({
         service: 'windy',
         status: 'error',
@@ -369,9 +519,10 @@ async function postToWindy(stationFromId, payload, timestamp, source = 'MQTT') {
         httpStatus: result.status,
         error: result.data
       });
+      receptionLogger.updatePostStatus(receptionId, 'windy', 'error');
     }
   } catch (err) {
-    console.error(`[${cfg.name}] Windy request failed:`, err.message);
+    console.error(`[${cfg.name}] Windy V2 request failed:`, err.message);
     uploadLogger.addLog({
       service: 'windy',
       status: 'error',
@@ -380,6 +531,7 @@ async function postToWindy(stationFromId, payload, timestamp, source = 'MQTT') {
       source: source,
       error: err.message
     });
+    receptionLogger.updatePostStatus(receptionId, 'windy', 'error');
   }
 }
 
@@ -398,13 +550,17 @@ function convertFanetPayload(fanetData) {
 }
 
 // Post to all configured weather services
-async function postToWeatherServices(stationFromId, payload, timestamp, source = 'MQTT') {
+// receptionStationId is the ID used for reception logging (may differ from config ID for Meshtastic)
+async function postToWeatherServices(stationFromId, payload, timestamp, source = 'MQTT', receptionStationId = null) {
   if (!weatherConfig.stations[stationFromId]) return;
+
+  // Use provided receptionStationId or fall back to stationFromId
+  const logStationId = receptionStationId || stationFromId;
 
   // Post to both services (WU immediately, Windy respects rate limit)
   await Promise.all([
-    postToWeatherUnderground(stationFromId, payload, timestamp, source),
-    postToWindy(stationFromId, payload, timestamp, source)
+    postToWeatherUnderground(stationFromId, payload, timestamp, source, logStationId),
+    postToWindy(stationFromId, payload, timestamp, source, logStationId)
   ]);
 }
 
@@ -440,7 +596,11 @@ client.on('message', (topic, message) => {
     // FANET RX
     if (topic.includes('GXAirCom') && topic.includes('/RxWd')) {
       const stationId = `fanet-rx-${data.ID}`;
-      storeReading(stationId, 'FANET-RX', {
+      const cfg = getStationConfig(stationId);
+      const stationName = cfg?.name || stationId;
+
+      // Validate weather data
+      const rawData = {
         windDir: data.wDir,
         windSpeed: data.wSpeed,
         windGust: data.wGust,
@@ -451,7 +611,19 @@ client.on('message', (topic, message) => {
         rssi: data.rssi,
         lat: data.lat,
         lon: data.lon
-      });
+      };
+
+      const validation = validateWeatherData(rawData, cfg, stationName);
+
+      // Log reception
+      receptionLogger.logReception(stationId, validation);
+
+      if (validation.status === 'rejected') {
+        console.log(`[${stationName}] Data rejected: ${validation.reasons.join(', ')}`);
+        return;
+      }
+
+      storeReading(stationId, 'FANET-RX', validation.cleanedData);
 
       // Post to weather services (WU and Windy) using the prefixed station ID
       const fanetPayload = convertFanetPayload(data);
@@ -462,12 +634,28 @@ client.on('message', (topic, message) => {
     else if (topic.includes('GXAirCom') && topic.endsWith('/WD')) {
       const deviceId = topic.split('/')[1];
       const stationId = `fanet-direct-${deviceId}`;
-      storeReading(stationId, 'MQTT-FANET', {
+      const cfg = getStationConfig(stationId);
+      const stationName = cfg?.name || stationId;
+
+      // Validate weather data
+      const rawData = {
         windDir: data.wDir,
         windSpeed: data.wSpeed,
         windGust: data.wGust,
         temp: data.temp
-      });
+      };
+
+      const validation = validateWeatherData(rawData, cfg, stationName);
+
+      // Log reception
+      receptionLogger.logReception(stationId, validation);
+
+      if (validation.status === 'rejected') {
+        console.log(`[${stationName}] Data rejected: ${validation.reasons.join(', ')}`);
+        return;
+      }
+
+      storeReading(stationId, 'MQTT-FANET', validation.cleanedData);
 
       // Post to weather services (WU and Windy) using the prefixed station ID
       const fanetPayload = convertFanetPayload(data);
@@ -491,8 +679,12 @@ client.on('message', (topic, message) => {
     // Note: Meshtastic reports wind in m/s, convert to km/h (* 3.6)
     else if (topic.includes('msh/') && data.type === 'telemetry' && data.payload?.wind_speed !== undefined) {
       const stationId = `meshtastic-${data.from}`;
+      const cfg = getStationConfig(stationId);
+      const stationName = cfg?.name || stationId;
       const msToKmh = 3.6;
-      storeReading(stationId, 'Meshtastic', {
+
+      // Validate weather data (convert to km/h for validation since that's our storage format)
+      const rawData = {
         windDir: data.payload.wind_direction,
         windSpeed: data.payload.wind_speed * msToKmh,
         windGust: data.payload.wind_gust !== undefined ? data.payload.wind_gust * msToKmh : undefined,
@@ -501,10 +693,23 @@ client.on('message', (topic, message) => {
         rainfall1h: data.payload.rainfall_1h,
         sensorVoltage: data.payload.voltage,
         rssi: data.rssi
-      });
+      };
+
+      const validation = validateWeatherData(rawData, cfg, stationName);
+
+      // Log reception
+      receptionLogger.logReception(stationId, validation);
+
+      if (validation.status === 'rejected') {
+        console.log(`[${stationName}] Data rejected: ${validation.reasons.join(', ')}`);
+        return;
+      }
+
+      storeReading(stationId, 'Meshtastic', validation.cleanedData);
 
       // Post to weather services (WU and Windy)
-      postToWeatherServices(String(data.from), data.payload, data.timestamp);
+      // Use numeric ID for config lookup, but pass stationId for reception logger
+      postToWeatherServices(String(data.from), data.payload, data.timestamp, 'MQTT', stationId);
     }
     // Meshtastic device telemetry (station battery/voltage)
     else if (topic.includes('msh/') && data.type === 'telemetry' && data.payload?.battery_level !== undefined) {
@@ -549,7 +754,10 @@ client.on('message', (topic, message) => {
 });
 
 // Clean old data every hour
-setInterval(cleanOldData, 60 * 60 * 1000);
+setInterval(() => {
+  cleanOldData();
+  receptionLogger.cleanup();
+}, 60 * 60 * 1000);
 
 // Watch for config file changes (hot-reload)
 const configWatcher = chokidar.watch(weatherConfigFile, {
@@ -654,14 +862,27 @@ async function checkStaleMeshtasticStations() {
       const windGust = metric.wind_gust !== null ? parseFloat(metric.wind_gust) : undefined;
       const windLull = metric.wind_lull !== null ? parseFloat(metric.wind_lull) : undefined;
 
-      storeReading(stationId, 'Meshtastic', {
+      // Validate weather data
+      const rawData = {
         windDir: metric.wind_direction,
         windSpeed: windSpeed !== undefined ? windSpeed * msToKmh : undefined,
         windGust: windGust !== undefined ? windGust * msToKmh : undefined,
         windLull: windLull !== undefined ? windLull * msToKmh : undefined,
         temp: metric.temperature !== null ? parseFloat(metric.temperature) : undefined,
         sensorVoltage: metric.voltage !== null ? parseFloat(metric.voltage) : undefined
-      });
+      };
+
+      const validation = validateWeatherData(rawData, cfg, cfg.name);
+
+      // Log reception
+      receptionLogger.logReception(stationId, validation);
+
+      if (validation.status === 'rejected') {
+        console.log(`[${cfg.name}] Fallback API data rejected: ${validation.reasons.join(', ')}`);
+        continue;
+      }
+
+      storeReading(stationId, 'Meshtastic', validation.cleanedData);
 
       // Build payload for weather services (expects m/s)
       const payload = {
@@ -674,7 +895,7 @@ async function checkStaleMeshtasticStations() {
       };
 
       const timestamp = Math.floor(metricTime / 1000);
-      postToWeatherServices(nodeId, payload, timestamp, 'HTTP');
+      postToWeatherServices(nodeId, payload, timestamp, 'HTTP', stationId);
 
     } catch (err) {
       // Silent failure - don't spam logs for API errors
